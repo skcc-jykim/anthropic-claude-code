@@ -50,9 +50,10 @@ EVENTBRIDGE_SCHEDULER_ROLE_NAME = os.getenv(
     "EventBridgeSchedulerExecutionRole"
 )
 
-# 생성된 Role ARN (동적으로 채워짐)
-EVENTBRIDGE_RULES_ROLE_ARN = None
-EVENTBRIDGE_SCHEDULER_ROLE_ARN = None
+# EventBridge 실행 Role ARN (환경변수로 제공 가능)
+# 환경변수로 제공되면 Role 생성을 스킵하고 제공된 ARN 사용
+EVENTBRIDGE_RULES_ROLE_ARN = os.getenv("EVENTBRIDGE_RULES_ROLE_ARN", None)
+EVENTBRIDGE_SCHEDULER_ROLE_ARN = os.getenv("EVENTBRIDGE_SCHEDULER_ROLE_ARN", None)
 
 # 서브넷 매핑
 SUBNET_MAP = {
@@ -241,135 +242,144 @@ def replace_lambda_arns_in_definition(definition: dict, src_account: str, dst_ac
 def create_eventbridge_execution_roles(iam_client, dst_account: str):
     """
     EventBridge Rules 및 Scheduler 실행 Role 생성
+    환경변수로 Role ARN이 제공되면 생성을 스킵
     """
     global EVENTBRIDGE_RULES_ROLE_ARN
     global EVENTBRIDGE_SCHEDULER_ROLE_ARN
 
     logger.info("\n" + "="*50)
-    logger.info("🔐 EventBridge 실행 Role 생성")
+    logger.info("🔐 EventBridge 실행 Role 확인/생성")
     logger.info("="*50)
 
-    # 1. EventBridge Rules 실행 Role 생성
-    logger.info(f"\n➡ EventBridge Rules Role 생성: {EVENTBRIDGE_RULES_ROLE_NAME}")
+    # 1. EventBridge Rules 실행 Role
+    if EVENTBRIDGE_RULES_ROLE_ARN:
+        logger.info(f"\n➡ EventBridge Rules Role: 환경변수에서 제공됨")
+        logger.info(f"  ✔ Role ARN: {EVENTBRIDGE_RULES_ROLE_ARN}")
+    else:
+        logger.info(f"\n➡ EventBridge Rules Role 생성: {EVENTBRIDGE_RULES_ROLE_NAME}")
 
-    try:
-        # 기존 Role 확인
         try:
-            existing_role = iam_client.get_role(RoleName=EVENTBRIDGE_RULES_ROLE_NAME)
-            EVENTBRIDGE_RULES_ROLE_ARN = existing_role["Role"]["Arn"]
-            logger.info(f"  ✔ 기존 Role 발견: {EVENTBRIDGE_RULES_ROLE_ARN}")
-        except ClientError as e:
-            if e.response["Error"]["Code"] != "NoSuchEntity":
-                raise
+            # 기존 Role 확인
+            try:
+                existing_role = iam_client.get_role(RoleName=EVENTBRIDGE_RULES_ROLE_NAME)
+                EVENTBRIDGE_RULES_ROLE_ARN = existing_role["Role"]["Arn"]
+                logger.info(f"  ✔ 기존 Role 발견: {EVENTBRIDGE_RULES_ROLE_ARN}")
+            except ClientError as e:
+                if e.response["Error"]["Code"] != "NoSuchEntity":
+                    raise
 
-            # Trust Policy 로드
-            trust_policy_path = os.path.join(
-                os.path.dirname(__file__),
-                "iam-policies",
-                "eventbridge-rules-trust-policy.json"
-            )
-            with open(trust_policy_path, "r") as f:
-                trust_policy = json.load(f)
+                # Trust Policy 로드
+                trust_policy_path = os.path.join(
+                    os.path.dirname(__file__),
+                    "iam-policies",
+                    "eventbridge-rules-trust-policy.json"
+                )
+                with open(trust_policy_path, "r") as f:
+                    trust_policy = json.load(f)
 
-            # Role 생성
-            response = iam_client.create_role(
-                RoleName=EVENTBRIDGE_RULES_ROLE_NAME,
-                AssumeRolePolicyDocument=json.dumps(trust_policy),
-                Description="EventBridge Rules execution role for cross-account migration",
-                Tags=[
-                    {"Key": "ManagedBy", "Value": "aws-migration-script"},
-                    {"Key": "Purpose", "Value": "EventBridgeRulesExecution"}
-                ]
-            )
-            EVENTBRIDGE_RULES_ROLE_ARN = response["Role"]["Arn"]
-            logger.info(f"  ✔ Role 생성 완료: {EVENTBRIDGE_RULES_ROLE_ARN}")
+                # Role 생성
+                response = iam_client.create_role(
+                    RoleName=EVENTBRIDGE_RULES_ROLE_NAME,
+                    AssumeRolePolicyDocument=json.dumps(trust_policy),
+                    Description="EventBridge Rules execution role for cross-account migration",
+                    Tags=[
+                        {"Key": "ManagedBy", "Value": "aws-migration-script"},
+                        {"Key": "Purpose", "Value": "EventBridgeRulesExecution"}
+                    ]
+                )
+                EVENTBRIDGE_RULES_ROLE_ARN = response["Role"]["Arn"]
+                logger.info(f"  ✔ Role 생성 완료: {EVENTBRIDGE_RULES_ROLE_ARN}")
 
-            # 권한 Policy 로드 및 첨부
-            policy_path = os.path.join(
-                os.path.dirname(__file__),
-                "iam-policies",
-                "eventbridge-rules-role-policy.json"
-            )
-            with open(policy_path, "r") as f:
-                policy_document = json.load(f)
+                # 권한 Policy 로드 및 첨부
+                policy_path = os.path.join(
+                    os.path.dirname(__file__),
+                    "iam-policies",
+                    "eventbridge-rules-role-policy.json"
+                )
+                with open(policy_path, "r") as f:
+                    policy_document = json.load(f)
 
-            # Inline Policy 첨부
-            iam_client.put_role_policy(
-                RoleName=EVENTBRIDGE_RULES_ROLE_NAME,
-                PolicyName="EventBridgeRulesExecutionPolicy",
-                PolicyDocument=json.dumps(policy_document)
-            )
-            logger.info(f"  ✔ Policy 첨부 완료")
+                # Inline Policy 첨부
+                iam_client.put_role_policy(
+                    RoleName=EVENTBRIDGE_RULES_ROLE_NAME,
+                    PolicyName="EventBridgeRulesExecutionPolicy",
+                    PolicyDocument=json.dumps(policy_document)
+                )
+                logger.info(f"  ✔ Policy 첨부 완료")
 
-            # Role 전파 대기
-            time.sleep(10)
-            logger.info(f"  ⏳ Role 전파 대기 중 (10초)...")
+                # Role 전파 대기
+                time.sleep(10)
+                logger.info(f"  ⏳ Role 전파 대기 중 (10초)...")
 
-    except Exception as e:
-        logger.error(f"  ❌ EventBridge Rules Role 생성 실패: {e}")
-        raise
+        except Exception as e:
+            logger.error(f"  ❌ EventBridge Rules Role 생성 실패: {e}")
+            raise
 
-    # 2. EventBridge Scheduler 실행 Role 생성
-    logger.info(f"\n➡ EventBridge Scheduler Role 생성: {EVENTBRIDGE_SCHEDULER_ROLE_NAME}")
+    # 2. EventBridge Scheduler 실행 Role
+    if EVENTBRIDGE_SCHEDULER_ROLE_ARN:
+        logger.info(f"\n➡ EventBridge Scheduler Role: 환경변수에서 제공됨")
+        logger.info(f"  ✔ Role ARN: {EVENTBRIDGE_SCHEDULER_ROLE_ARN}")
+    else:
+        logger.info(f"\n➡ EventBridge Scheduler Role 생성: {EVENTBRIDGE_SCHEDULER_ROLE_NAME}")
 
-    try:
-        # 기존 Role 확인
         try:
-            existing_role = iam_client.get_role(RoleName=EVENTBRIDGE_SCHEDULER_ROLE_NAME)
-            EVENTBRIDGE_SCHEDULER_ROLE_ARN = existing_role["Role"]["Arn"]
-            logger.info(f"  ✔ 기존 Role 발견: {EVENTBRIDGE_SCHEDULER_ROLE_ARN}")
-        except ClientError as e:
-            if e.response["Error"]["Code"] != "NoSuchEntity":
-                raise
+            # 기존 Role 확인
+            try:
+                existing_role = iam_client.get_role(RoleName=EVENTBRIDGE_SCHEDULER_ROLE_NAME)
+                EVENTBRIDGE_SCHEDULER_ROLE_ARN = existing_role["Role"]["Arn"]
+                logger.info(f"  ✔ 기존 Role 발견: {EVENTBRIDGE_SCHEDULER_ROLE_ARN}")
+            except ClientError as e:
+                if e.response["Error"]["Code"] != "NoSuchEntity":
+                    raise
 
-            # Trust Policy 로드
-            trust_policy_path = os.path.join(
-                os.path.dirname(__file__),
-                "iam-policies",
-                "eventbridge-scheduler-trust-policy.json"
-            )
-            with open(trust_policy_path, "r") as f:
-                trust_policy = json.load(f)
+                # Trust Policy 로드
+                trust_policy_path = os.path.join(
+                    os.path.dirname(__file__),
+                    "iam-policies",
+                    "eventbridge-scheduler-trust-policy.json"
+                )
+                with open(trust_policy_path, "r") as f:
+                    trust_policy = json.load(f)
 
-            # Role 생성
-            response = iam_client.create_role(
-                RoleName=EVENTBRIDGE_SCHEDULER_ROLE_NAME,
-                AssumeRolePolicyDocument=json.dumps(trust_policy),
-                Description="EventBridge Scheduler execution role for cross-account migration",
-                Tags=[
-                    {"Key": "ManagedBy", "Value": "aws-migration-script"},
-                    {"Key": "Purpose", "Value": "EventBridgeSchedulerExecution"}
-                ]
-            )
-            EVENTBRIDGE_SCHEDULER_ROLE_ARN = response["Role"]["Arn"]
-            logger.info(f"  ✔ Role 생성 완료: {EVENTBRIDGE_SCHEDULER_ROLE_ARN}")
+                # Role 생성
+                response = iam_client.create_role(
+                    RoleName=EVENTBRIDGE_SCHEDULER_ROLE_NAME,
+                    AssumeRolePolicyDocument=json.dumps(trust_policy),
+                    Description="EventBridge Scheduler execution role for cross-account migration",
+                    Tags=[
+                        {"Key": "ManagedBy", "Value": "aws-migration-script"},
+                        {"Key": "Purpose", "Value": "EventBridgeSchedulerExecution"}
+                    ]
+                )
+                EVENTBRIDGE_SCHEDULER_ROLE_ARN = response["Role"]["Arn"]
+                logger.info(f"  ✔ Role 생성 완료: {EVENTBRIDGE_SCHEDULER_ROLE_ARN}")
 
-            # 권한 Policy 로드 및 첨부
-            policy_path = os.path.join(
-                os.path.dirname(__file__),
-                "iam-policies",
-                "eventbridge-scheduler-role-policy.json"
-            )
-            with open(policy_path, "r") as f:
-                policy_document = json.load(f)
+                # 권한 Policy 로드 및 첨부
+                policy_path = os.path.join(
+                    os.path.dirname(__file__),
+                    "iam-policies",
+                    "eventbridge-scheduler-role-policy.json"
+                )
+                with open(policy_path, "r") as f:
+                    policy_document = json.load(f)
 
-            # Inline Policy 첨부
-            iam_client.put_role_policy(
-                RoleName=EVENTBRIDGE_SCHEDULER_ROLE_NAME,
-                PolicyName="EventBridgeSchedulerExecutionPolicy",
-                PolicyDocument=json.dumps(policy_document)
-            )
-            logger.info(f"  ✔ Policy 첨부 완료")
+                # Inline Policy 첨부
+                iam_client.put_role_policy(
+                    RoleName=EVENTBRIDGE_SCHEDULER_ROLE_NAME,
+                    PolicyName="EventBridgeSchedulerExecutionPolicy",
+                    PolicyDocument=json.dumps(policy_document)
+                )
+                logger.info(f"  ✔ Policy 첨부 완료")
 
-            # Role 전파 대기
-            time.sleep(10)
-            logger.info(f"  ⏳ Role 전파 대기 중 (10초)...")
+                # Role 전파 대기
+                time.sleep(10)
+                logger.info(f"  ⏳ Role 전파 대기 중 (10초)...")
 
-    except Exception as e:
-        logger.error(f"  ❌ EventBridge Scheduler Role 생성 실패: {e}")
-        raise
+        except Exception as e:
+            logger.error(f"  ❌ EventBridge Scheduler Role 생성 실패: {e}")
+            raise
 
-    logger.info(f"\n🔐 EventBridge 실행 Role 생성 완료!")
+    logger.info(f"\n🔐 EventBridge 실행 Role 준비 완료!")
     logger.info(f"  - Rules Role: {EVENTBRIDGE_RULES_ROLE_ARN}")
     logger.info(f"  - Scheduler Role: {EVENTBRIDGE_SCHEDULER_ROLE_ARN}")
 
