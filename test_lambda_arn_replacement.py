@@ -14,11 +14,13 @@ def replace_lambda_arns_in_definition(definition: dict, src_account: str, dst_ac
     """
     StepFunction 정의에서 Lambda ARN을 재귀적으로 교체
     버전/alias가 포함된 Lambda ARN도 올바르게 처리
+    Resource 필드뿐만 아니라 FunctionName 필드도 확인 (Parameters.FunctionName 등)
     """
     if isinstance(definition, dict):
         new_dict = {}
         for key, value in definition.items():
-            if key == "Resource" and isinstance(value, str):
+            # Lambda ARN이 포함될 수 있는 필드들: Resource, FunctionName
+            if key in ("Resource", "FunctionName") and isinstance(value, str):
                 # Lambda ARN 교체
                 if "arn:aws:lambda" in value and src_account in value:
                     # Lambda ARN에서 버전/alias 분리
@@ -41,11 +43,11 @@ def replace_lambda_arns_in_definition(definition: dict, src_account: str, dst_ac
                         else:
                             new_arn = mapped
                         new_dict[key] = new_arn
-                        print(f"  ✓ Replaced Lambda ARN: {value} -> {new_arn}")
+                        print(f"  ✓ Replaced Lambda ARN in '{key}': {value} -> {new_arn}")
                     else:
                         # 매핑이 없으면 계정 ID만 교체
                         new_dict[key] = value.replace(src_account, dst_account)
-                        print(f"  ⚠ No mapping found for base ARN '{base_arn}', replaced account ID: {value} -> {new_dict[key]}")
+                        print(f"  ⚠ No mapping found for base ARN '{base_arn}' in '{key}', replaced account ID: {value} -> {new_dict[key]}")
                 else:
                     new_dict[key] = value
             else:
@@ -141,6 +143,66 @@ print(f"Output Task1: {result6['States']['Task1']['Resource']}")
 print(f"Input Task2:  {test6['States']['Task2']['Resource']}")
 print(f"Output Task2: {result6['States']['Task2']['Resource']}")
 print(f"Pass: {result6['States']['Task1']['Resource'] == 'arn:aws:lambda:us-east-1:222222222222:function:my-function:$LATEST' and result6['States']['Task2']['Resource'] == 'arn:aws:lambda:us-east-1:222222222222:function:another-function:1'}")
+
+# 테스트 7: Parameters.FunctionName 필드 (lambda:invoke 패턴)
+print("\n[Test 7] Parameters.FunctionName 필드 (lambda:invoke 패턴)")
+test7 = {
+    "Type": "Task",
+    "Resource": "arn:aws:states:::lambda:invoke",
+    "Parameters": {
+        "FunctionName": "arn:aws:lambda:us-east-1:111111111111:function:my-function"
+    }
+}
+result7 = replace_lambda_arns_in_definition(test7, src_account, dst_account)
+print(f"Input Resource:  {test7['Resource']}")
+print(f"Output Resource: {result7['Resource']}")
+print(f"Input FunctionName:  {test7['Parameters']['FunctionName']}")
+print(f"Output FunctionName: {result7['Parameters']['FunctionName']}")
+print(f"Expected Resource: arn:aws:states:::lambda:invoke (unchanged)")
+print(f"Expected FunctionName: arn:aws:lambda:us-east-1:222222222222:function:my-function")
+print(f"Pass: {result7['Resource'] == 'arn:aws:states:::lambda:invoke' and result7['Parameters']['FunctionName'] == 'arn:aws:lambda:us-east-1:222222222222:function:my-function'}")
+
+# 테스트 8: Parameters.FunctionName with version (lambda:invoke 패턴)
+print("\n[Test 8] Parameters.FunctionName with $LATEST (lambda:invoke 패턴)")
+test8 = {
+    "Type": "Task",
+    "Resource": "arn:aws:states:::lambda:invoke",
+    "Parameters": {
+        "Payload": {
+            "key": "value"
+        },
+        "FunctionName": "arn:aws:lambda:us-east-1:111111111111:function:my-function:$LATEST"
+    }
+}
+result8 = replace_lambda_arns_in_definition(test8, src_account, dst_account)
+print(f"Input FunctionName:  {test8['Parameters']['FunctionName']}")
+print(f"Output FunctionName: {result8['Parameters']['FunctionName']}")
+print(f"Expected: arn:aws:lambda:us-east-1:222222222222:function:my-function:$LATEST")
+print(f"Pass: {result8['Parameters']['FunctionName'] == 'arn:aws:lambda:us-east-1:222222222222:function:my-function:$LATEST'}")
+
+# 테스트 9: 실제 상태머신 정의 (사용자가 보여준 패턴)
+print("\n[Test 9] 실제 상태머신 정의 (Parameters.FunctionName with Payload)")
+LAMBDA_ARN_MAP["arn:aws:lambda:ap-northeast-2:507124486027:function:model_reprocessing"] = "arn:aws:lambda:ap-northeast-2:999999999999:function:model_reprocessing"
+test9 = {
+    "StartAt": "재처리 정보 입력",
+    "States": {
+        "재처리 날짜 입력 생성": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "OutputPath": "$.Payload",
+            "Parameters": {
+                "Payload.$": "$",
+                "FunctionName": "arn:aws:lambda:ap-northeast-2:507124486027:function:model_reprocessing"
+            },
+            "Next": "재처리 날짜 결과 생성"
+        }
+    }
+}
+result9 = replace_lambda_arns_in_definition(test9, "507124486027", "999999999999")
+print(f"Input FunctionName:  {test9['States']['재처리 날짜 입력 생성']['Parameters']['FunctionName']}")
+print(f"Output FunctionName: {result9['States']['재처리 날짜 입력 생성']['Parameters']['FunctionName']}")
+print(f"Expected: arn:aws:lambda:ap-northeast-2:999999999999:function:model_reprocessing")
+print(f"Pass: {result9['States']['재처리 날짜 입력 생성']['Parameters']['FunctionName'] == 'arn:aws:lambda:ap-northeast-2:999999999999:function:model_reprocessing'}")
 
 print("\n" + "="*70)
 print("테스트 완료")
