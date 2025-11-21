@@ -417,6 +417,15 @@ def migrate_step_functions(sfn_src, sfn_dst, src_account: str, dst_account: str)
             if NAME_PREFIX and not sm_name.startswith(NAME_PREFIX):
                 continue
 
+            # 문제가 있는 상태 머신 건너뛰기 (임시)
+            SKIP_STATE_MACHINES = [
+                # 오류가 발생하는 상태 머신 이름을 여기에 추가
+                # "weatherdata-workflow-reprocessing-with-date-range",
+            ]
+            if sm_name in SKIP_STATE_MACHINES:
+                logger.warning(f"⚠️ SKIP: {sm_name} (SKIP_STATE_MACHINES에 포함됨)")
+                continue
+
             logger.info(f"\n{'='*50}")
             logger.info(f"🔄 상태 머신 마이그레이션 중: {sm_name}")
             logger.info(f"{'='*50}")
