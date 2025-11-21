@@ -437,13 +437,13 @@ def migrate_step_functions(sfn_src, sfn_dst, src_account: str, dst_account: str)
                     "type": sm_detail.get("type", "STANDARD")
                 }
 
-                # Logging 설정
-                if sm_detail.get("loggingConfiguration"):
-                    params["loggingConfiguration"] = sm_detail["loggingConfiguration"]
+                # Logging 설정 - 임시로 비활성화 (권한 문제 회피)
+                # if sm_detail.get("loggingConfiguration"):
+                #     params["loggingConfiguration"] = sm_detail["loggingConfiguration"]
 
-                # Tracing 설정
-                if sm_detail.get("tracingConfiguration"):
-                    params["tracingConfiguration"] = sm_detail["tracingConfiguration"]
+                # Tracing 설정 - 임시로 비활성화 (권한 문제 회피)
+                # if sm_detail.get("tracingConfiguration"):
+                #     params["tracingConfiguration"] = sm_detail["tracingConfiguration"]
 
                 # 상태 머신 생성/업데이트
                 try:
@@ -457,12 +457,11 @@ def migrate_step_functions(sfn_src, sfn_dst, src_account: str, dst_account: str)
 
                     if existing_sm:
                         logger.info(f"  기존 상태 머신 업데이트 중...")
+                        # Logging/Tracing 설정 제외하고 업데이트 (권한 문제 회피)
                         sfn_dst.update_state_machine(
                             stateMachineArn=existing_sm["stateMachineArn"],
                             definition=params["definition"],
-                            roleArn=params["roleArn"],
-                            loggingConfiguration=params.get("loggingConfiguration", {}),
-                            tracingConfiguration=params.get("tracingConfiguration", {})
+                            roleArn=params["roleArn"]
                         )
                         dst_arn = existing_sm["stateMachineArn"]
                         logger.info(f"  ✔ 업데이트 완료: {sm_name}")
