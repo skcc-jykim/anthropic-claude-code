@@ -171,6 +171,7 @@ def is_valid_arn(arn: str) -> bool:
 def replace_lambda_arns_in_definition(definition: dict, src_account: str, dst_account: str) -> dict:
     """
     StepFunction 정의에서 Lambda ARN을 재귀적으로 교체
+    버전/alias가 포함된 Lambda ARN도 올바르게 처리
     """
     if isinstance(definition, dict):
         new_dict = {}
@@ -178,15 +179,31 @@ def replace_lambda_arns_in_definition(definition: dict, src_account: str, dst_ac
             if key == "Resource" and isinstance(value, str):
                 # Lambda ARN 교체
                 if "arn:aws:lambda" in value and src_account in value:
-                    # LAMBDA_ARN_MAP에서 찾기
-                    mapped = LAMBDA_ARN_MAP.get(value)
+                    # Lambda ARN에서 버전/alias 분리
+                    # 형식: arn:aws:lambda:region:account:function:function-name[:version-or-alias]
+                    base_arn = value
+                    version_or_alias = None
+
+                    # 버전이나 alias 확인 (마지막 콜론 이후)
+                    arn_parts = value.split(":")
+                    if len(arn_parts) >= 8:  # 버전/alias가 포함된 경우
+                        version_or_alias = arn_parts[7]
+                        base_arn = ":".join(arn_parts[:7])  # 기본 ARN (버전/alias 제외)
+
+                    # LAMBDA_ARN_MAP에서 기본 ARN으로 찾기
+                    mapped = LAMBDA_ARN_MAP.get(base_arn)
                     if mapped:
-                        new_dict[key] = mapped
-                        logger.info(f"  Replaced Lambda ARN: {value} -> {mapped}")
+                        # 매핑을 찾으면 버전/alias 유지하면서 교체
+                        if version_or_alias:
+                            new_arn = f"{mapped}:{version_or_alias}"
+                        else:
+                            new_arn = mapped
+                        new_dict[key] = new_arn
+                        logger.info(f"  Replaced Lambda ARN: {value} -> {new_arn}")
                     else:
-                        # 계정 ID만 교체
+                        # 매핑이 없으면 계정 ID만 교체
                         new_dict[key] = value.replace(src_account, dst_account)
-                        logger.warning(f"  No mapping found, replaced account ID: {value} -> {new_dict[key]}")
+                        logger.warning(f"  No mapping found for base ARN '{base_arn}', replaced account ID: {value} -> {new_dict[key]}")
                 else:
                     new_dict[key] = value
             else:
