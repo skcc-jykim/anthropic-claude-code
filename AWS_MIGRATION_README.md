@@ -164,6 +164,47 @@ python migrate_aws_resources.py
    - Lambda 및 Step Functions 실행 Role이 대상 계정에 준비되어야 함
    - `DEFAULT_DEST_LAMBDA_ROLE`, `DEFAULT_DEST_SFN_ROLE` 환경 변수 설정
 
+   **Step Functions Role 필수 권한:**
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {
+         "Effect": "Allow",
+         "Action": [
+           "states:*"
+         ],
+         "Resource": "*"
+       },
+       {
+         "Effect": "Allow",
+         "Action": [
+           "events:PutRule",
+           "events:PutTargets",
+           "events:DescribeRule",
+           "events:DeleteRule",
+           "events:RemoveTargets"
+         ],
+         "Resource": "*",
+         "Condition": {
+           "StringEquals": {
+             "events:ManagedBy": "states.amazonaws.com"
+           }
+         }
+       },
+       {
+         "Effect": "Allow",
+         "Action": [
+           "lambda:InvokeFunction"
+         ],
+         "Resource": "*"
+       }
+     ]
+   }
+   ```
+
+   **참고**: Step Functions가 EventBridge와 통합될 때 자동으로 managed rule을 생성합니다. 이를 위해 `events:*` 권한이 반드시 필요합니다.
+
 4. **DLQ 리소스**
    - Dead Letter Queue (SQS, SNS)가 대상 계정에 존재해야 함
    - 계정 ID만 자동 교체되므로, 동일한 이름의 리소스가 있어야 함
@@ -228,6 +269,36 @@ ResourceNotFoundException: Target not found
 **해결**:
 - Lambda나 Step Functions가 먼저 생성되었는지 확인
 - Lambda에 EventBridge 호출 권한이 있는지 확인 (Resource Policy)
+
+### 5. Step Functions Managed Rule 생성 실패
+
+```
+AccessDeniedException: 'arn:aws:iam::ACCOUNT:role/ROLE_NAME' is not authorized to create managed-rule
+```
+
+**원인**: Step Functions가 EventBridge와 통합될 때 자동으로 managed rule을 생성하는데, 실행 Role에 EventBridge 권한이 없을 때 발생합니다.
+
+**해결**: Step Functions 실행 Role에 다음 권한을 추가하세요:
+```json
+{
+  "Effect": "Allow",
+  "Action": [
+    "events:PutRule",
+    "events:PutTargets",
+    "events:DescribeRule",
+    "events:DeleteRule",
+    "events:RemoveTargets"
+  ],
+  "Resource": "*",
+  "Condition": {
+    "StringEquals": {
+      "events:ManagedBy": "states.amazonaws.com"
+    }
+  }
+}
+```
+
+**참고**: `states:*` 권한만으로는 부족하며, 반드시 `events:*` 관련 권한이 필요합니다.
 
 ## 고급 사용법
 
