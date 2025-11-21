@@ -972,9 +972,8 @@ def main():
         # 3) Step Functions 복제
         migrate_step_functions(sfn_src, sfn_dst, src_account, dst_account)
 
-        # 4) EventBridge 규칙 복제 - 임시로 비활성화 (managed-rule 권한 문제)
-        # migrate_eventbridge_rules(events_src, events_dst, src_account, dst_account)
-        logger.info("\n⚠️ EventBridge Rules 마이그레이션 건너뜀 (수동으로 처리 필요)")
+        # 4) EventBridge 규칙 복제
+        migrate_eventbridge_rules(events_src, events_dst, src_account, dst_account)
 
         # 5) EventBridge Scheduler 그룹 복제 - 임시로 비활성화 (Trust Relationship 문제)
         # migrate_schedule_groups(scheduler_src, scheduler_dst)
