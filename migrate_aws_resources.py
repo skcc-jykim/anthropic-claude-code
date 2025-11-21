@@ -170,9 +170,10 @@ def is_valid_arn(arn: str) -> bool:
 
 def replace_lambda_arns_in_definition(definition: dict, src_account: str, dst_account: str) -> dict:
     """
-    StepFunction 정의에서 Lambda ARN을 재귀적으로 교체
-    버전/alias가 포함된 Lambda ARN도 올바르게 처리
-    Resource 필드뿐만 아니라 FunctionName 필드도 확인 (Parameters.FunctionName 등)
+    StepFunction 정의에서 Lambda ARN 및 StateMachine ARN을 재귀적으로 교체
+    - Lambda ARN: 버전/alias가 포함된 경우도 올바르게 처리
+    - StateMachine ARN: 다른 상태머신을 호출하는 경우 처리
+    Resource, FunctionName, StateMachineArn 필드를 확인
     """
     if isinstance(definition, dict):
         new_dict = {}
@@ -206,6 +207,22 @@ def replace_lambda_arns_in_definition(definition: dict, src_account: str, dst_ac
                         # 매핑이 없으면 계정 ID만 교체
                         new_dict[key] = value.replace(src_account, dst_account)
                         logger.warning(f"  No mapping found for base ARN '{base_arn}' in '{key}', replaced account ID: {value} -> {new_dict[key]}")
+                else:
+                    new_dict[key] = value
+            # StateMachine ARN이 포함될 수 있는 필드: StateMachineArn
+            elif key == "StateMachineArn" and isinstance(value, str):
+                # StateMachine ARN 교체
+                # 형식: arn:aws:states:region:account:stateMachine:state-machine-name
+                if "arn:aws:states" in value and src_account in value:
+                    # SFN_ARN_MAP에서 찾기
+                    mapped = SFN_ARN_MAP.get(value)
+                    if mapped:
+                        new_dict[key] = mapped
+                        logger.info(f"  Replaced StateMachine ARN in '{key}': {value} -> {mapped}")
+                    else:
+                        # 매핑이 없으면 계정 ID만 교체
+                        new_dict[key] = value.replace(src_account, dst_account)
+                        logger.warning(f"  No mapping found for StateMachine ARN '{value}' in '{key}', replaced account ID: {value} -> {new_dict[key]}")
                 else:
                     new_dict[key] = value
             else:

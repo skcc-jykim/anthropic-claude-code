@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Lambda ARN 교체 로직 테스트
+Lambda ARN 및 StateMachine ARN 교체 로직 테스트
 """
 import json
 
@@ -10,11 +10,18 @@ LAMBDA_ARN_MAP = {
     "arn:aws:lambda:us-east-1:111111111111:function:another-function": "arn:aws:lambda:us-east-1:222222222222:function:another-function"
 }
 
+# 테스트용 SFN_ARN_MAP 시뮬레이션
+SFN_ARN_MAP = {
+    "arn:aws:states:us-east-1:111111111111:stateMachine:my-state-machine": "arn:aws:states:us-east-1:222222222222:stateMachine:my-state-machine",
+    "arn:aws:states:ap-northeast-2:507124486027:stateMachine:model-workflow": "arn:aws:states:ap-northeast-2:999999999999:stateMachine:model-workflow"
+}
+
 def replace_lambda_arns_in_definition(definition: dict, src_account: str, dst_account: str) -> dict:
     """
-    StepFunction 정의에서 Lambda ARN을 재귀적으로 교체
-    버전/alias가 포함된 Lambda ARN도 올바르게 처리
-    Resource 필드뿐만 아니라 FunctionName 필드도 확인 (Parameters.FunctionName 등)
+    StepFunction 정의에서 Lambda ARN 및 StateMachine ARN을 재귀적으로 교체
+    - Lambda ARN: 버전/alias가 포함된 경우도 올바르게 처리
+    - StateMachine ARN: 다른 상태머신을 호출하는 경우 처리
+    Resource, FunctionName, StateMachineArn 필드를 확인
     """
     if isinstance(definition, dict):
         new_dict = {}
@@ -50,6 +57,22 @@ def replace_lambda_arns_in_definition(definition: dict, src_account: str, dst_ac
                         print(f"  ⚠ No mapping found for base ARN '{base_arn}' in '{key}', replaced account ID: {value} -> {new_dict[key]}")
                 else:
                     new_dict[key] = value
+            # StateMachine ARN이 포함될 수 있는 필드: StateMachineArn
+            elif key == "StateMachineArn" and isinstance(value, str):
+                # StateMachine ARN 교체
+                # 형식: arn:aws:states:region:account:stateMachine:state-machine-name
+                if "arn:aws:states" in value and src_account in value:
+                    # SFN_ARN_MAP에서 찾기
+                    mapped = SFN_ARN_MAP.get(value)
+                    if mapped:
+                        new_dict[key] = mapped
+                        print(f"  ✓ Replaced StateMachine ARN in '{key}': {value} -> {mapped}")
+                    else:
+                        # 매핑이 없으면 계정 ID만 교체
+                        new_dict[key] = value.replace(src_account, dst_account)
+                        print(f"  ⚠ No mapping found for StateMachine ARN '{value}' in '{key}', replaced account ID: {value} -> {new_dict[key]}")
+                else:
+                    new_dict[key] = value
             else:
                 new_dict[key] = replace_lambda_arns_in_definition(value, src_account, dst_account)
         return new_dict
@@ -60,7 +83,7 @@ def replace_lambda_arns_in_definition(definition: dict, src_account: str, dst_ac
 
 # 테스트 케이스
 print("="*70)
-print("Lambda ARN 교체 로직 테스트")
+print("Lambda ARN 및 StateMachine ARN 교체 로직 테스트")
 print("="*70)
 
 src_account = "111111111111"
@@ -203,6 +226,64 @@ print(f"Input FunctionName:  {test9['States']['재처리 날짜 입력 생성'][
 print(f"Output FunctionName: {result9['States']['재처리 날짜 입력 생성']['Parameters']['FunctionName']}")
 print(f"Expected: arn:aws:lambda:ap-northeast-2:999999999999:function:model_reprocessing")
 print(f"Pass: {result9['States']['재처리 날짜 입력 생성']['Parameters']['FunctionName'] == 'arn:aws:lambda:ap-northeast-2:999999999999:function:model_reprocessing'}")
+
+# 테스트 10: Parameters.StateMachineArn 필드 (states:startExecution 패턴)
+print("\n[Test 10] Parameters.StateMachineArn 필드 (states:startExecution 패턴)")
+test10 = {
+    "Type": "Task",
+    "Resource": "arn:aws:states:::states:startExecution.sync:2",
+    "Parameters": {
+        "StateMachineArn": "arn:aws:states:us-east-1:111111111111:stateMachine:my-state-machine",
+        "Input": {
+            "key.$": "$.value"
+        }
+    }
+}
+result10 = replace_lambda_arns_in_definition(test10, src_account, dst_account)
+print(f"Input Resource:  {test10['Resource']}")
+print(f"Output Resource: {result10['Resource']}")
+print(f"Input StateMachineArn:  {test10['Parameters']['StateMachineArn']}")
+print(f"Output StateMachineArn: {result10['Parameters']['StateMachineArn']}")
+print(f"Expected Resource: arn:aws:states:::states:startExecution.sync:2 (unchanged)")
+print(f"Expected StateMachineArn: arn:aws:states:us-east-1:222222222222:stateMachine:my-state-machine")
+print(f"Pass: {result10['Resource'] == 'arn:aws:states:::states:startExecution.sync:2' and result10['Parameters']['StateMachineArn'] == 'arn:aws:states:us-east-1:222222222222:stateMachine:my-state-machine'}")
+
+# 테스트 11: 실제 상태머신 정의 (StateMachineArn with modelCIcd)
+print("\n[Test 11] 실제 상태머신 정의 (Parameters.StateMachineArn)")
+test11 = {
+    "StartAt": "모델 워크플로우 실행",
+    "States": {
+        "모델 워크플로우 실행": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::states:startExecution.sync:2",
+            "Parameters": {
+                "StateMachineArn": "arn:aws:states:ap-northeast-2:507124486027:stateMachine:model-workflow",
+                "Input": {
+                    "modelCIcd.$": "$.modelCIcd"
+                }
+            },
+            "End": True
+        }
+    }
+}
+result11 = replace_lambda_arns_in_definition(test11, "507124486027", "999999999999")
+print(f"Input StateMachineArn:  {test11['States']['모델 워크플로우 실행']['Parameters']['StateMachineArn']}")
+print(f"Output StateMachineArn: {result11['States']['모델 워크플로우 실행']['Parameters']['StateMachineArn']}")
+print(f"Expected: arn:aws:states:ap-northeast-2:999999999999:stateMachine:model-workflow")
+print(f"Pass: {result11['States']['모델 워크플로우 실행']['Parameters']['StateMachineArn'] == 'arn:aws:states:ap-northeast-2:999999999999:stateMachine:model-workflow'}")
+
+# 테스트 12: 매핑에 없는 StateMachine (fallback to account ID replacement)
+print("\n[Test 12] 매핑에 없는 StateMachine")
+test12 = {
+    "Parameters": {
+        "StateMachineArn": "arn:aws:states:us-east-1:111111111111:stateMachine:unknown-state-machine"
+    }
+}
+result12 = replace_lambda_arns_in_definition(test12, src_account, dst_account)
+print(f"Input StateMachineArn:  {test12['Parameters']['StateMachineArn']}")
+print(f"Output StateMachineArn: {result12['Parameters']['StateMachineArn']}")
+print(f"Expected: arn:aws:states:us-east-1:222222222222:stateMachine:unknown-state-machine")
+print(f"Pass: {result12['Parameters']['StateMachineArn'] == 'arn:aws:states:us-east-1:222222222222:stateMachine:unknown-state-machine'}")
 
 print("\n" + "="*70)
 print("테스트 완료")
