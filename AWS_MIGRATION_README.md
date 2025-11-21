@@ -2,9 +2,22 @@
 
 AWS 계정 간 Lambda, Step Functions, EventBridge 규칙 및 EventBridge Scheduler를 자동으로 마이그레이션하는 Python 스크립트입니다.
 
-## 주요 기능
+## 🎉 주요 기능 (NEW: EventBridge 실행 Role 자동 생성!)
+
+**이 스크립트는 EventBridge Rules 및 Scheduler가 Lambda/StepFunctions를 호출하는데 필요한 IAM Role을 자동으로 생성합니다!**
+
+더 이상 수동으로 IAM Role을 생성하거나 Trust Relationship을 설정할 필요가 없습니다.
 
 ### ✅ 마이그레이션 대상 리소스
+
+0. **IAM Roles (자동 생성)**
+   - **EventBridge Rules 실행 Role** (자동 생성)
+     - Trust Relationship: `events.amazonaws.com`
+     - 권한: Lambda 호출, Step Functions 실행, SQS/SNS 발행 등
+   - **EventBridge Scheduler 실행 Role** (자동 생성)
+     - Trust Relationship: `scheduler.amazonaws.com`
+     - 권한: Lambda 호출, Step Functions 실행, SQS/SNS 발행 등
+   - 기존 Role이 있으면 재사용, 없으면 자동 생성
 
 1. **Lambda Layers**
    - 자동으로 모든 Layer 버전 감지 및 복제
@@ -52,11 +65,18 @@ AWS 계정 간 Lambda, Step Functions, EventBridge 규칙 및 EventBridge Schedu
 
 ### 🔧 개선 사항 (기존 코드 대비)
 
-1. **로깅 시스템**
+1. **IAM Role 자동 생성 (NEW!)**
+   - EventBridge Rules 및 Scheduler 실행 Role 자동 생성
+   - Trust Relationship 자동 설정 (events.amazonaws.com, scheduler.amazonaws.com)
+   - 필요한 권한 정책 자동 첨부 (Lambda, Step Functions, SQS, SNS 등)
+   - 기존 Role이 있으면 재사용, 없으면 생성
+   - 더 이상 수동으로 IAM 설정 필요 없음!
+
+2. **로깅 시스템**
    - `print` 대신 `logging` 모듈 사용
    - 타임스탬프 및 로그 레벨 포함
 
-2. **에러 처리**
+3. **에러 처리**
    - API Throttling 자동 재시도 (지수 백오프)
    - 상세한 에러 메시지
    - 개별 리소스 실패 시에도 전체 프로세스 계속 진행
@@ -141,12 +161,13 @@ python migrate_aws_resources.py
 
 스크립트는 다음 순서로 리소스를 마이그레이션합니다:
 
+0. **IAM Roles (NEW!)** - EventBridge Rules 및 Scheduler 실행 Role 자동 생성
 1. **Lambda Layers** - Lambda가 의존하는 Layer를 먼저 복제
 2. **Lambda Functions** - 함수 코드 및 설정 복제
 3. **Step Functions** - 상태 머신 정의 복제 (Lambda ARN 자동 업데이트)
-4. **EventBridge Rules** - 이벤트 규칙 및 타겟 복제
+4. **EventBridge Rules** - 이벤트 규칙 및 타겟 복제 (자동 생성된 Role 사용)
 5. **EventBridge Schedule Groups** - 일정 그룹 복제
-6. **EventBridge Schedules** - 일정 복제 (Lambda/Step Functions ARN 자동 업데이트)
+6. **EventBridge Schedules** - 일정 복제 (Lambda/Step Functions ARN 자동 업데이트, 자동 생성된 Role 사용)
 
 ## 주의사항
 
@@ -154,15 +175,20 @@ python migrate_aws_resources.py
 
 1. **IAM 권한**
    - 소스 계정: Lambda, Step Functions, EventBridge, EventBridge Scheduler 읽기 권한
-   - 대상 계정: 위 서비스들의 생성/수정 권한
+   - 대상 계정:
+     - Lambda, Step Functions, EventBridge, EventBridge Scheduler의 생성/수정 권한
+     - **IAM Role 생성 및 정책 첨부 권한** (iam:CreateRole, iam:PutRolePolicy, iam:GetRole 등)
 
 2. **네트워크 리소스**
    - VPC, 서브넷, 보안 그룹이 대상 계정에 미리 생성되어 있어야 함
    - `SUBNET_MAP`, `SG_MAP`에 정확한 매핑 설정 필요
 
 3. **IAM Role**
-   - Lambda 및 Step Functions 실행 Role이 대상 계정에 준비되어야 함
-   - `DEFAULT_DEST_LAMBDA_ROLE`, `DEFAULT_DEST_SFN_ROLE` 환경 변수 설정
+   - **EventBridge Rules/Scheduler 실행 Role**: 스크립트가 자동으로 생성하므로 수동 설정 불필요!
+   - Lambda 실행 Role: 대상 계정에 준비되어야 함
+     - `DEFAULT_DEST_LAMBDA_ROLE` 환경 변수 설정
+   - Step Functions 실행 Role: 대상 계정에 준비되어야 함
+     - `DEFAULT_DEST_SFN_ROLE` 환경 변수 설정
 
    **Step Functions Role 필수 권한:**
    ```json
@@ -359,13 +385,26 @@ ROLE_MAP = {
 2025-11-21 10:00:00 - INFO - 🚀 AWS 리소스 마이그레이션 시작
 2025-11-21 10:00:01 - INFO - 소스 계정: 111111111111
 2025-11-21 10:00:01 - INFO - 대상 계정: 222222222222
-2025-11-21 10:00:02 - INFO - 🔧 Layer 자동 마이그레이션 시작
-2025-11-21 10:00:05 - INFO - ✔ 매핑 등록: arn:aws:lambda:...
+2025-11-21 10:00:02 - INFO - 🔐 EventBridge 실행 Role 생성
+2025-11-21 10:00:03 - INFO - ➡ EventBridge Rules Role 생성: EventBridgeRulesExecutionRole
+2025-11-21 10:00:04 - INFO -   ✔ Role 생성 완료: arn:aws:iam::222222222222:role/EventBridgeRulesExecutionRole
+2025-11-21 10:00:05 - INFO -   ✔ Policy 첨부 완료
+2025-11-21 10:00:15 - INFO - ➡ EventBridge Scheduler Role 생성: EventBridgeSchedulerExecutionRole
+2025-11-21 10:00:16 - INFO -   ✔ Role 생성 완료: arn:aws:iam::222222222222:role/EventBridgeSchedulerExecutionRole
+2025-11-21 10:00:17 - INFO -   ✔ Policy 첨부 완료
+2025-11-21 10:00:27 - INFO - 🔧 Layer 자동 마이그레이션 시작
+2025-11-21 10:00:30 - INFO - ✔ 매핑 등록: arn:aws:lambda:...
 ...
 2025-11-21 10:05:00 - INFO - ✅ 전체 마이그레이션 완료!
-2025-11-21 10:05:00 - INFO - Layer: 5개
-2025-11-21 10:05:00 - INFO - Lambda: 25개
-2025-11-21 10:05:00 - INFO - Step Functions: 3개
+2025-11-21 10:05:00 - INFO - 🔐 EventBridge 실행 Role: 생성 완료
+2025-11-21 10:05:00 - INFO -    - Rules Role: arn:aws:iam::222222222222:role/EventBridgeRulesExecutionRole
+2025-11-21 10:05:00 - INFO -    - Scheduler Role: arn:aws:iam::222222222222:role/EventBridgeSchedulerExecutionRole
+2025-11-21 10:05:00 - INFO - 🔧 Layer: 5개
+2025-11-21 10:05:00 - INFO - 🚀 Lambda: 25개
+2025-11-21 10:05:00 - INFO - ⚙️ Step Functions: 3개
+2025-11-21 10:05:00 - INFO - 📅 EventBridge Rules: 복제 완료
+2025-11-21 10:05:00 - INFO - 📁 EventBridge Schedule Groups: 2개
+2025-11-21 10:05:00 - INFO - ⏰ EventBridge Schedules: 복제 완료
 ```
 
 ## 라이선스

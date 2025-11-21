@@ -39,6 +39,21 @@ DEFAULT_DEST_SFN_ROLE = os.getenv(
     "arn:aws:iam::846697434179:role/skies-dp-prd-dip-sfn-default-role"
 )
 
+# EventBridge 실행 Role 이름
+EVENTBRIDGE_RULES_ROLE_NAME = os.getenv(
+    "EVENTBRIDGE_RULES_ROLE_NAME",
+    "EventBridgeRulesExecutionRole"
+)
+
+EVENTBRIDGE_SCHEDULER_ROLE_NAME = os.getenv(
+    "EVENTBRIDGE_SCHEDULER_ROLE_NAME",
+    "EventBridgeSchedulerExecutionRole"
+)
+
+# 생성된 Role ARN (동적으로 채워짐)
+EVENTBRIDGE_RULES_ROLE_ARN = None
+EVENTBRIDGE_SCHEDULER_ROLE_ARN = None
+
 # 서브넷 매핑
 SUBNET_MAP = {
     "subnet-0b08f7b5e2f07cad8": "subnet-022ded0a08e1dbc9a",
@@ -184,6 +199,146 @@ def replace_lambda_arns_in_definition(definition: dict, src_account: str, dst_ac
 
 
 # ===================================================
+# IAM Role 생성
+# ===================================================
+@retry_on_throttle
+def create_eventbridge_execution_roles(iam_client, dst_account: str):
+    """
+    EventBridge Rules 및 Scheduler 실행 Role 생성
+    """
+    global EVENTBRIDGE_RULES_ROLE_ARN
+    global EVENTBRIDGE_SCHEDULER_ROLE_ARN
+
+    logger.info("\n" + "="*50)
+    logger.info("🔐 EventBridge 실행 Role 생성")
+    logger.info("="*50)
+
+    # 1. EventBridge Rules 실행 Role 생성
+    logger.info(f"\n➡ EventBridge Rules Role 생성: {EVENTBRIDGE_RULES_ROLE_NAME}")
+
+    try:
+        # 기존 Role 확인
+        try:
+            existing_role = iam_client.get_role(RoleName=EVENTBRIDGE_RULES_ROLE_NAME)
+            EVENTBRIDGE_RULES_ROLE_ARN = existing_role["Role"]["Arn"]
+            logger.info(f"  ✔ 기존 Role 발견: {EVENTBRIDGE_RULES_ROLE_ARN}")
+        except ClientError as e:
+            if e.response["Error"]["Code"] != "NoSuchEntity":
+                raise
+
+            # Trust Policy 로드
+            trust_policy_path = os.path.join(
+                os.path.dirname(__file__),
+                "iam-policies",
+                "eventbridge-rules-trust-policy.json"
+            )
+            with open(trust_policy_path, "r") as f:
+                trust_policy = json.load(f)
+
+            # Role 생성
+            response = iam_client.create_role(
+                RoleName=EVENTBRIDGE_RULES_ROLE_NAME,
+                AssumeRolePolicyDocument=json.dumps(trust_policy),
+                Description="EventBridge Rules execution role for cross-account migration",
+                Tags=[
+                    {"Key": "ManagedBy", "Value": "aws-migration-script"},
+                    {"Key": "Purpose", "Value": "EventBridgeRulesExecution"}
+                ]
+            )
+            EVENTBRIDGE_RULES_ROLE_ARN = response["Role"]["Arn"]
+            logger.info(f"  ✔ Role 생성 완료: {EVENTBRIDGE_RULES_ROLE_ARN}")
+
+            # 권한 Policy 로드 및 첨부
+            policy_path = os.path.join(
+                os.path.dirname(__file__),
+                "iam-policies",
+                "eventbridge-rules-role-policy.json"
+            )
+            with open(policy_path, "r") as f:
+                policy_document = json.load(f)
+
+            # Inline Policy 첨부
+            iam_client.put_role_policy(
+                RoleName=EVENTBRIDGE_RULES_ROLE_NAME,
+                PolicyName="EventBridgeRulesExecutionPolicy",
+                PolicyDocument=json.dumps(policy_document)
+            )
+            logger.info(f"  ✔ Policy 첨부 완료")
+
+            # Role 전파 대기
+            time.sleep(10)
+            logger.info(f"  ⏳ Role 전파 대기 중 (10초)...")
+
+    except Exception as e:
+        logger.error(f"  ❌ EventBridge Rules Role 생성 실패: {e}")
+        raise
+
+    # 2. EventBridge Scheduler 실행 Role 생성
+    logger.info(f"\n➡ EventBridge Scheduler Role 생성: {EVENTBRIDGE_SCHEDULER_ROLE_NAME}")
+
+    try:
+        # 기존 Role 확인
+        try:
+            existing_role = iam_client.get_role(RoleName=EVENTBRIDGE_SCHEDULER_ROLE_NAME)
+            EVENTBRIDGE_SCHEDULER_ROLE_ARN = existing_role["Role"]["Arn"]
+            logger.info(f"  ✔ 기존 Role 발견: {EVENTBRIDGE_SCHEDULER_ROLE_ARN}")
+        except ClientError as e:
+            if e.response["Error"]["Code"] != "NoSuchEntity":
+                raise
+
+            # Trust Policy 로드
+            trust_policy_path = os.path.join(
+                os.path.dirname(__file__),
+                "iam-policies",
+                "eventbridge-scheduler-trust-policy.json"
+            )
+            with open(trust_policy_path, "r") as f:
+                trust_policy = json.load(f)
+
+            # Role 생성
+            response = iam_client.create_role(
+                RoleName=EVENTBRIDGE_SCHEDULER_ROLE_NAME,
+                AssumeRolePolicyDocument=json.dumps(trust_policy),
+                Description="EventBridge Scheduler execution role for cross-account migration",
+                Tags=[
+                    {"Key": "ManagedBy", "Value": "aws-migration-script"},
+                    {"Key": "Purpose", "Value": "EventBridgeSchedulerExecution"}
+                ]
+            )
+            EVENTBRIDGE_SCHEDULER_ROLE_ARN = response["Role"]["Arn"]
+            logger.info(f"  ✔ Role 생성 완료: {EVENTBRIDGE_SCHEDULER_ROLE_ARN}")
+
+            # 권한 Policy 로드 및 첨부
+            policy_path = os.path.join(
+                os.path.dirname(__file__),
+                "iam-policies",
+                "eventbridge-scheduler-role-policy.json"
+            )
+            with open(policy_path, "r") as f:
+                policy_document = json.load(f)
+
+            # Inline Policy 첨부
+            iam_client.put_role_policy(
+                RoleName=EVENTBRIDGE_SCHEDULER_ROLE_NAME,
+                PolicyName="EventBridgeSchedulerExecutionPolicy",
+                PolicyDocument=json.dumps(policy_document)
+            )
+            logger.info(f"  ✔ Policy 첨부 완료")
+
+            # Role 전파 대기
+            time.sleep(10)
+            logger.info(f"  ⏳ Role 전파 대기 중 (10초)...")
+
+    except Exception as e:
+        logger.error(f"  ❌ EventBridge Scheduler Role 생성 실패: {e}")
+        raise
+
+    logger.info(f"\n🔐 EventBridge 실행 Role 생성 완료!")
+    logger.info(f"  - Rules Role: {EVENTBRIDGE_RULES_ROLE_ARN}")
+    logger.info(f"  - Scheduler Role: {EVENTBRIDGE_SCHEDULER_ROLE_ARN}")
+
+
+# ===================================================
 # Layer 자동 마이그레이션
 # ===================================================
 @retry_on_throttle
@@ -300,21 +455,20 @@ def migrate_lambdas(lambda_src, lambda_dst, src_account: str, dst_account: str):
                     with open(zip_path, "rb") as f:
                         zip_bytes = f.read()
 
-                # base parameters
-                params = {
+                # 공통 설정 파라미터
+                common_params = {
                     "FunctionName": name,
                     "Role": map_role(cfg["Role"]),
                     "Runtime": cfg["Runtime"],
                     "Handler": cfg["Handler"],
                     "Timeout": cfg["Timeout"],
                     "MemorySize": cfg["MemorySize"],
-                    "Architectures": cfg.get("Architectures", ["x86_64"]),
                     "Description": cfg.get("Description", "")
                 }
 
                 # Environment
-                if cfg.get("Environment"):
-                    params["Environment"] = cfg["Environment"]
+                if cfg.get("Environment") and cfg["Environment"].get("Variables"):
+                    common_params["Environment"] = cfg["Environment"]
 
                 # Layers → 자동 매핑된 LAYER_MAP 사용
                 if cfg.get("Layers"):
@@ -327,20 +481,42 @@ def migrate_lambdas(lambda_src, lambda_dst, src_account: str, dst_account: str):
                             mapped.append(src_arn)
                         else:
                             mapped.append(dst_arn)
-                    params["Layers"] = mapped
+                    common_params["Layers"] = mapped
 
-                # VPC
+                # VPC 설정
                 vpc_cfg = map_vpc_config(cfg.get("VpcConfig"))
-                if vpc_cfg:
-                    params["VpcConfig"] = vpc_cfg
+                if vpc_cfg and vpc_cfg.get("SubnetIds"):
+                    common_params["VpcConfig"] = vpc_cfg
 
                 # Dead Letter Queue
                 if cfg.get("DeadLetterConfig") and cfg["DeadLetterConfig"].get("TargetArn"):
                     dlq_arn = cfg["DeadLetterConfig"]["TargetArn"]
-                    # DLQ ARN도 계정 변경 필요
-                    params["DeadLetterConfig"] = {
+                    common_params["DeadLetterConfig"] = {
                         "TargetArn": dlq_arn.replace(src_account, dst_account)
                     }
+
+                # Tracing 설정
+                if cfg.get("TracingConfig") and cfg["TracingConfig"].get("Mode"):
+                    common_params["TracingConfig"] = cfg["TracingConfig"]
+
+                # KMS Key (계정 교체)
+                if cfg.get("KMSKeyArn"):
+                    common_params["KMSKeyArn"] = cfg["KMSKeyArn"].replace(src_account, dst_account)
+
+                # EphemeralStorage (최신 Lambda 기능)
+                if cfg.get("EphemeralStorage"):
+                    common_params["EphemeralStorage"] = cfg["EphemeralStorage"]
+
+                # FileSystemConfigs (EFS 연결)
+                if cfg.get("FileSystemConfigs"):
+                    # EFS ARN도 계정 교체 필요
+                    fs_configs = []
+                    for fs_config in cfg["FileSystemConfigs"]:
+                        new_config = fs_config.copy()
+                        if "Arn" in new_config:
+                            new_config["Arn"] = new_config["Arn"].replace(src_account, dst_account)
+                        fs_configs.append(new_config)
+                    common_params["FileSystemConfigs"] = fs_configs
 
                 # Lambda 생성/업데이트
                 function_exists = False
@@ -353,13 +529,25 @@ def migrate_lambdas(lambda_src, lambda_dst, src_account: str, dst_account: str):
 
                 if function_exists:
                     logger.info(f"  기존 함수 업데이트 중...")
-                    lambda_dst.update_function_configuration(**params)
-                    time.sleep(1)  # Configuration 업데이트 완료 대기
+                    # 업데이트는 configuration 먼저
+                    lambda_dst.update_function_configuration(**common_params)
+                    # Lambda가 업데이트 완료될 때까지 대기
+                    time.sleep(2)
+                    # 코드 업데이트
                     lambda_dst.update_function_code(FunctionName=name, ZipFile=zip_bytes)
                     logger.info(f"  ✔ 업데이트 완료: {name}")
                 else:
                     logger.info(f"  새 함수 생성 중...")
-                    lambda_dst.create_function(**params, Code={"ZipFile": zip_bytes})
+                    # 생성 시에만 사용 가능한 파라미터 추가
+                    create_params = common_params.copy()
+                    create_params["Code"] = {"ZipFile": zip_bytes}
+                    create_params["Architectures"] = cfg.get("Architectures", ["x86_64"])
+
+                    # PackageType (기본값: Zip)
+                    if cfg.get("PackageType"):
+                        create_params["PackageType"] = cfg["PackageType"]
+
+                    lambda_dst.create_function(**create_params)
                     logger.info(f"  ✔ 생성 완료: {name}")
 
                 # 함수 ARN 매핑 저장
@@ -554,8 +742,11 @@ def migrate_eventbridge_rules(events_src, events_dst, src_account: str, dst_acco
                     if rule.get("Description"):
                         params["Description"] = rule["Description"]
 
+                    # RoleArn 처리: 타겟이 있는 경우 EventBridge 실행 Role 사용
                     if rule.get("RoleArn"):
-                        params["RoleArn"] = map_role(rule["RoleArn"])
+                        # 기존에 RoleArn이 있으면 생성된 EventBridge Role 사용
+                        params["RoleArn"] = EVENTBRIDGE_RULES_ROLE_ARN
+                        logger.info(f"  Role 설정: {EVENTBRIDGE_RULES_ROLE_ARN}")
 
                     events_dst.put_rule(**params)
                     logger.info(f"  ✔ 규칙 생성/업데이트 완료")
@@ -613,7 +804,9 @@ def migrate_eventbridge_rules(events_src, events_dst, src_account: str, dst_acco
 
                             # 추가 설정 복사
                             if target.get("RoleArn"):
-                                new_target["RoleArn"] = map_role(target["RoleArn"])
+                                # 타겟에 RoleArn이 있으면 EventBridge 실행 Role 사용
+                                new_target["RoleArn"] = EVENTBRIDGE_RULES_ROLE_ARN
+                                logger.info(f"  타겟 Role 설정: {EVENTBRIDGE_RULES_ROLE_ARN}")
 
                             if target.get("Input"):
                                 new_target["Input"] = target["Input"]
@@ -866,9 +1059,14 @@ def migrate_schedules(scheduler_src, scheduler_dst, src_account: str, dst_accoun
                                 target["Arn"] = target_arn.replace(src_account, dst_account)
                                 logger.info(f"  타겟 ARN 계정 교체: {target['Arn']}")
 
-                            # Role ARN 매핑
+                            # Role ARN 매핑: EventBridge Scheduler 실행 Role 사용
                             if target.get("RoleArn"):
-                                target["RoleArn"] = map_role(target["RoleArn"])
+                                target["RoleArn"] = EVENTBRIDGE_SCHEDULER_ROLE_ARN
+                                logger.info(f"  Scheduler 타겟 Role 설정: {EVENTBRIDGE_SCHEDULER_ROLE_ARN}")
+                            else:
+                                # RoleArn이 없어도 Scheduler는 Role이 필요하므로 추가
+                                target["RoleArn"] = EVENTBRIDGE_SCHEDULER_ROLE_ARN
+                                logger.info(f"  Scheduler 타겟 Role 추가: {EVENTBRIDGE_SCHEDULER_ROLE_ARN}")
 
                             # DeadLetterConfig
                             if target.get("DeadLetterConfig"):
@@ -961,8 +1159,12 @@ def main():
     events_dst = dst_sess.client("events")
     scheduler_src = src_sess.client("scheduler")
     scheduler_dst = dst_sess.client("scheduler")
+    iam_dst = dst_sess.client("iam")
 
     try:
+        # 0) EventBridge 실행 Role 생성 (가장 먼저 실행)
+        create_eventbridge_execution_roles(iam_dst, dst_account)
+
         # 1) Layer 먼저 복제
         migrate_layers(lambda_src, lambda_dst)
 
@@ -975,23 +1177,24 @@ def main():
         # 4) EventBridge 규칙 복제
         migrate_eventbridge_rules(events_src, events_dst, src_account, dst_account)
 
-        # 5) EventBridge Scheduler 그룹 복제 - 임시로 비활성화 (Trust Relationship 문제)
-        # migrate_schedule_groups(scheduler_src, scheduler_dst)
-        logger.info("\n⚠️ EventBridge Scheduler Groups 마이그레이션 건너뜀 (수동으로 처리 필요)")
+        # 5) EventBridge Scheduler 그룹 복제
+        migrate_schedule_groups(scheduler_src, scheduler_dst)
 
-        # 6) EventBridge Scheduler 일정 복제 - 임시로 비활성화 (Trust Relationship 문제)
-        # migrate_schedules(scheduler_src, scheduler_dst, src_account, dst_account)
-        logger.info("\n⚠️ EventBridge Schedules 마이그레이션 건너뜀 (수동으로 처리 필요)")
+        # 6) EventBridge Scheduler 일정 복제
+        migrate_schedules(scheduler_src, scheduler_dst, src_account, dst_account)
 
         logger.info("\n" + "="*70)
         logger.info("✅ 전체 마이그레이션 완료!")
         logger.info("="*70)
-        logger.info(f"Layer: {len(LAYER_MAP)}개")
-        logger.info(f"Lambda: {len(LAMBDA_ARN_MAP)}개")
-        logger.info(f"Step Functions: {len(SFN_ARN_MAP)}개")
-        logger.info(f"Schedule Groups: {len(SCHEDULE_GROUP_ARN_MAP)}개")
-        logger.info(f"EventBridge Rules: (복제 완료)")
-        logger.info(f"EventBridge Schedules: (복제 완료)")
+        logger.info(f"🔐 EventBridge 실행 Role: 생성 완료")
+        logger.info(f"   - Rules Role: {EVENTBRIDGE_RULES_ROLE_ARN}")
+        logger.info(f"   - Scheduler Role: {EVENTBRIDGE_SCHEDULER_ROLE_ARN}")
+        logger.info(f"🔧 Layer: {len(LAYER_MAP)}개")
+        logger.info(f"🚀 Lambda: {len(LAMBDA_ARN_MAP)}개")
+        logger.info(f"⚙️ Step Functions: {len(SFN_ARN_MAP)}개")
+        logger.info(f"📅 EventBridge Rules: 복제 완료")
+        logger.info(f"📁 EventBridge Schedule Groups: {len(SCHEDULE_GROUP_ARN_MAP)}개")
+        logger.info(f"⏰ EventBridge Schedules: 복제 완료")
         logger.info("="*70)
 
     except Exception as e:

@@ -2,7 +2,113 @@
 
 이 디렉토리에는 AWS 리소스 마이그레이션에 필요한 IAM 정책 샘플이 포함되어 있습니다.
 
-## Step Functions Role 정책
+## 📋 정책 파일 목록
+
+### 자동 적용되는 정책 (마이그레이션 스크립트가 자동 생성)
+
+1. **EventBridge Rules 실행 Role**
+   - Trust Policy: `eventbridge-rules-trust-policy.json`
+   - 권한 Policy: `eventbridge-rules-role-policy.json`
+   - Role 이름: `EventBridgeRulesExecutionRole`
+   - 스크립트가 자동으로 생성하므로 수동 적용 불필요!
+
+2. **EventBridge Scheduler 실행 Role**
+   - Trust Policy: `eventbridge-scheduler-trust-policy.json`
+   - 권한 Policy: `eventbridge-scheduler-role-policy.json`
+   - Role 이름: `EventBridgeSchedulerExecutionRole`
+   - 스크립트가 자동으로 생성하므로 수동 적용 불필요!
+
+### 수동 적용이 필요한 정책
+
+3. **Step Functions 실행 Role**
+   - 권한 Policy: `stepfunctions-role-policy.json`
+   - 마이그레이션 전에 수동으로 적용해야 함
+
+---
+
+## EventBridge Rules Role 정책 (자동 생성)
+
+**파일**:
+- Trust Policy: `eventbridge-rules-trust-policy.json`
+- 권한 Policy: `eventbridge-rules-role-policy.json`
+
+### 자동 생성 방식
+
+마이그레이션 스크립트가 자동으로:
+1. Role 존재 여부 확인
+2. 없으면 Trust Policy로 Role 생성
+3. 권한 Policy를 Inline Policy로 첨부
+4. 모든 EventBridge Rules에 이 Role 자동 할당
+
+### Trust Relationship
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "events.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+```
+
+### 권한
+
+- Lambda 함수 호출 (`lambda:InvokeFunction`)
+- Step Functions 실행 (`states:StartExecution`)
+- SQS 메시지 전송 (`sqs:SendMessage`)
+- SNS 메시지 발행 (`sns:Publish`)
+- EventBridge 이벤트 전송 (`events:PutEvents`)
+
+---
+
+## EventBridge Scheduler Role 정책 (자동 생성)
+
+**파일**:
+- Trust Policy: `eventbridge-scheduler-trust-policy.json`
+- 권한 Policy: `eventbridge-scheduler-role-policy.json`
+
+### 자동 생성 방식
+
+마이그레이션 스크립트가 자동으로:
+1. Role 존재 여부 확인
+2. 없으면 Trust Policy로 Role 생성
+3. 권한 Policy를 Inline Policy로 첨부
+4. 모든 EventBridge Schedules에 이 Role 자동 할당
+
+### Trust Relationship
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "scheduler.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+```
+
+### 권한
+
+- Lambda 함수 호출 (`lambda:InvokeFunction`)
+- Step Functions 실행 (`states:StartExecution`)
+- SQS 메시지 전송 (`sqs:SendMessage`)
+- SNS 메시지 발행 (`sns:Publish`)
+- EventBridge 이벤트 전송 (`events:PutEvents`)
+
+---
+
+## Step Functions Role 정책 (수동 적용 필요)
 
 **파일**: `stepfunctions-role-policy.json`
 
