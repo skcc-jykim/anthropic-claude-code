@@ -203,7 +203,10 @@ python migrate_aws_resources.py
    }
    ```
 
-   **참고**: Step Functions가 EventBridge와 통합될 때 자동으로 managed rule을 생성합니다. 이를 위해 `events:*` 권한이 반드시 필요합니다.
+   **⚠️ 중요**:
+   - EventBridge 권한에 **반드시 `Condition`이 포함**되어야 합니다!
+   - `Condition`이 없으면 `"is not authorized to create managed-rule"` 오류가 발생합니다.
+   - Step Functions는 EventBridge 통합 시 자동으로 managed rule을 생성하며, 이는 `"events:ManagedBy": "states.amazonaws.com"` 조건이 필요합니다.
 
 4. **DLQ 리소스**
    - Dead Letter Queue (SQS, SNS)가 대상 계정에 존재해야 함
@@ -270,35 +273,51 @@ ResourceNotFoundException: Target not found
 - Lambda나 Step Functions가 먼저 생성되었는지 확인
 - Lambda에 EventBridge 호출 권한이 있는지 확인 (Resource Policy)
 
-### 5. Step Functions Managed Rule 생성 실패
+### 5. Step Functions Managed Rule 생성 실패 ⚠️
 
 ```
 AccessDeniedException: 'arn:aws:iam::ACCOUNT:role/ROLE_NAME' is not authorized to create managed-rule
 ```
 
-**원인**: Step Functions가 EventBridge와 통합될 때 자동으로 managed rule을 생성하는데, 실행 Role에 EventBridge 권한이 없을 때 발생합니다.
+**원인**: Step Functions가 EventBridge와 통합될 때 자동으로 managed rule을 생성하는데, 실행 Role에 EventBridge 권한이 없거나 **Condition이 누락**되었을 때 발생합니다.
 
-**해결**: Step Functions 실행 Role에 다음 권한을 추가하세요:
-```json
-{
-  "Effect": "Allow",
-  "Action": [
-    "events:PutRule",
-    "events:PutTargets",
-    "events:DescribeRule",
-    "events:DeleteRule",
-    "events:RemoveTargets"
-  ],
-  "Resource": "*",
-  "Condition": {
-    "StringEquals": {
-      "events:ManagedBy": "states.amazonaws.com"
-    }
-  }
-}
-```
+**해결 방법**:
 
-**참고**: `states:*` 권한만으로는 부족하며, 반드시 `events:*` 관련 권한이 필요합니다.
+1. **IAM Role 정책에 다음 Statement 추가** (Condition 포함 필수!):
+   ```json
+   {
+     "Effect": "Allow",
+     "Action": [
+       "events:PutRule",
+       "events:PutTargets",
+       "events:DescribeRule",
+       "events:DeleteRule",
+       "events:RemoveTargets"
+     ],
+     "Resource": "*",
+     "Condition": {
+       "StringEquals": {
+         "events:ManagedBy": "states.amazonaws.com"
+       }
+     }
+   }
+   ```
+
+2. **AWS Console에서 설정하는 경우**:
+   - IAM > Roles > [Step Functions Role] > Permissions > Add permissions > Create inline policy
+   - JSON 탭 선택 후 위 정책 붙여넣기
+   - **중요**: `Condition` 블록을 반드시 포함해야 합니다!
+
+3. **확인 방법**:
+   - IAM Role의 정책에서 EventBridge 권한 확인
+   - `Condition` 항목에 `"events:ManagedBy": "states.amazonaws.com"`가 있는지 확인
+
+**주의사항**:
+- ❌ EventBridge 권한만 있고 `Condition`이 없으면 → **여전히 오류 발생**
+- ✅ EventBridge 권한 + `Condition` 포함 → **정상 작동**
+- `states:*` 권한만으로는 부족하며, 반드시 `events:*` 관련 권한과 조건이 필요합니다.
+
+**샘플 정책 파일**: `iam-policies/stepfunctions-role-policy.json` 참고
 
 ## 고급 사용법
 
