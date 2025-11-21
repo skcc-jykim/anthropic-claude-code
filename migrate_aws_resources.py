@@ -976,11 +976,13 @@ def main():
         # migrate_eventbridge_rules(events_src, events_dst, src_account, dst_account)
         logger.info("\n⚠️ EventBridge Rules 마이그레이션 건너뜀 (수동으로 처리 필요)")
 
-        # 5) EventBridge Scheduler 그룹 복제
-        migrate_schedule_groups(scheduler_src, scheduler_dst)
+        # 5) EventBridge Scheduler 그룹 복제 - 임시로 비활성화 (Trust Relationship 문제)
+        # migrate_schedule_groups(scheduler_src, scheduler_dst)
+        logger.info("\n⚠️ EventBridge Scheduler Groups 마이그레이션 건너뜀 (수동으로 처리 필요)")
 
-        # 6) EventBridge Scheduler 일정 복제
-        migrate_schedules(scheduler_src, scheduler_dst, src_account, dst_account)
+        # 6) EventBridge Scheduler 일정 복제 - 임시로 비활성화 (Trust Relationship 문제)
+        # migrate_schedules(scheduler_src, scheduler_dst, src_account, dst_account)
+        logger.info("\n⚠️ EventBridge Schedules 마이그레이션 건너뜀 (수동으로 처리 필요)")
 
         logger.info("\n" + "="*70)
         logger.info("✅ 전체 마이그레이션 완료!")
