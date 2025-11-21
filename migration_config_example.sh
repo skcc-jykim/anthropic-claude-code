@@ -28,6 +28,14 @@ export DEFAULT_DEST_LAMBDA_ROLE="arn:aws:iam::TARGET_ACCOUNT_ID:role/lambda-exec
 # Step Functions 기본 실행 Role
 export DEFAULT_DEST_SFN_ROLE="arn:aws:iam::TARGET_ACCOUNT_ID:role/stepfunctions-execution-role"
 
+# EventBridge Rules 실행 Role (선택적)
+# 환경변수로 제공하면 자동 생성을 스킵하고 제공된 Role 사용
+# export EVENTBRIDGE_RULES_ROLE_ARN="arn:aws:iam::TARGET_ACCOUNT_ID:role/EventBridgeRulesExecutionRole"
+
+# EventBridge Scheduler 실행 Role (선택적)
+# 환경변수로 제공하면 자동 생성을 스킵하고 제공된 Role 사용
+# export EVENTBRIDGE_SCHEDULER_ROLE_ARN="arn:aws:iam::TARGET_ACCOUNT_ID:role/EventBridgeSchedulerExecutionRole"
+
 # ===================================================
 # 실행
 # ===================================================
