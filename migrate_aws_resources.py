@@ -455,21 +455,20 @@ def migrate_lambdas(lambda_src, lambda_dst, src_account: str, dst_account: str):
                     with open(zip_path, "rb") as f:
                         zip_bytes = f.read()
 
-                # base parameters
-                params = {
+                # 공통 설정 파라미터
+                common_params = {
                     "FunctionName": name,
                     "Role": map_role(cfg["Role"]),
                     "Runtime": cfg["Runtime"],
                     "Handler": cfg["Handler"],
                     "Timeout": cfg["Timeout"],
                     "MemorySize": cfg["MemorySize"],
-                    "Architectures": cfg.get("Architectures", ["x86_64"]),
                     "Description": cfg.get("Description", "")
                 }
 
                 # Environment
-                if cfg.get("Environment"):
-                    params["Environment"] = cfg["Environment"]
+                if cfg.get("Environment") and cfg["Environment"].get("Variables"):
+                    common_params["Environment"] = cfg["Environment"]
 
                 # Layers → 자동 매핑된 LAYER_MAP 사용
                 if cfg.get("Layers"):
@@ -482,20 +481,42 @@ def migrate_lambdas(lambda_src, lambda_dst, src_account: str, dst_account: str):
                             mapped.append(src_arn)
                         else:
                             mapped.append(dst_arn)
-                    params["Layers"] = mapped
+                    common_params["Layers"] = mapped
 
-                # VPC
+                # VPC 설정
                 vpc_cfg = map_vpc_config(cfg.get("VpcConfig"))
-                if vpc_cfg:
-                    params["VpcConfig"] = vpc_cfg
+                if vpc_cfg and vpc_cfg.get("SubnetIds"):
+                    common_params["VpcConfig"] = vpc_cfg
 
                 # Dead Letter Queue
                 if cfg.get("DeadLetterConfig") and cfg["DeadLetterConfig"].get("TargetArn"):
                     dlq_arn = cfg["DeadLetterConfig"]["TargetArn"]
-                    # DLQ ARN도 계정 변경 필요
-                    params["DeadLetterConfig"] = {
+                    common_params["DeadLetterConfig"] = {
                         "TargetArn": dlq_arn.replace(src_account, dst_account)
                     }
+
+                # Tracing 설정
+                if cfg.get("TracingConfig") and cfg["TracingConfig"].get("Mode"):
+                    common_params["TracingConfig"] = cfg["TracingConfig"]
+
+                # KMS Key (계정 교체)
+                if cfg.get("KMSKeyArn"):
+                    common_params["KMSKeyArn"] = cfg["KMSKeyArn"].replace(src_account, dst_account)
+
+                # EphemeralStorage (최신 Lambda 기능)
+                if cfg.get("EphemeralStorage"):
+                    common_params["EphemeralStorage"] = cfg["EphemeralStorage"]
+
+                # FileSystemConfigs (EFS 연결)
+                if cfg.get("FileSystemConfigs"):
+                    # EFS ARN도 계정 교체 필요
+                    fs_configs = []
+                    for fs_config in cfg["FileSystemConfigs"]:
+                        new_config = fs_config.copy()
+                        if "Arn" in new_config:
+                            new_config["Arn"] = new_config["Arn"].replace(src_account, dst_account)
+                        fs_configs.append(new_config)
+                    common_params["FileSystemConfigs"] = fs_configs
 
                 # Lambda 생성/업데이트
                 function_exists = False
@@ -508,13 +529,25 @@ def migrate_lambdas(lambda_src, lambda_dst, src_account: str, dst_account: str):
 
                 if function_exists:
                     logger.info(f"  기존 함수 업데이트 중...")
-                    lambda_dst.update_function_configuration(**params)
-                    time.sleep(1)  # Configuration 업데이트 완료 대기
+                    # 업데이트는 configuration 먼저
+                    lambda_dst.update_function_configuration(**common_params)
+                    # Lambda가 업데이트 완료될 때까지 대기
+                    time.sleep(2)
+                    # 코드 업데이트
                     lambda_dst.update_function_code(FunctionName=name, ZipFile=zip_bytes)
                     logger.info(f"  ✔ 업데이트 완료: {name}")
                 else:
                     logger.info(f"  새 함수 생성 중...")
-                    lambda_dst.create_function(**params, Code={"ZipFile": zip_bytes})
+                    # 생성 시에만 사용 가능한 파라미터 추가
+                    create_params = common_params.copy()
+                    create_params["Code"] = {"ZipFile": zip_bytes}
+                    create_params["Architectures"] = cfg.get("Architectures", ["x86_64"])
+
+                    # PackageType (기본값: Zip)
+                    if cfg.get("PackageType"):
+                        create_params["PackageType"] = cfg["PackageType"]
+
+                    lambda_dst.create_function(**create_params)
                     logger.info(f"  ✔ 생성 완료: {name}")
 
                 # 함수 ARN 매핑 저장
