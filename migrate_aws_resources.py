@@ -126,6 +126,32 @@ def extract_account_from_arn(arn: str) -> Optional[str]:
     return None
 
 
+def is_valid_arn(arn: str) -> bool:
+    """ARN 유효성 검증"""
+    if not arn or not isinstance(arn, str):
+        return False
+
+    parts = arn.split(":")
+    # ARN은 최소한 arn:partition:service:region:account-id:resource 형식이어야 함
+    if len(parts) < 6:
+        return False
+
+    # 첫 번째 부분은 "arn"이어야 함
+    if parts[0] != "arn":
+        return False
+
+    # 계정 ID는 비어있지 않아야 함 (일부 서비스는 예외지만 Lambda/StepFunctions는 필수)
+    account_id = parts[4]
+    if not account_id:
+        return False
+
+    # 리소스 부분이 있어야 함
+    if len(parts) < 6 or not parts[5]:
+        return False
+
+    return True
+
+
 def replace_lambda_arns_in_definition(definition: dict, src_account: str, dst_account: str) -> dict:
     """
     StepFunction 정의에서 Lambda ARN을 재귀적으로 교체
@@ -534,35 +560,47 @@ def migrate_eventbridge_rules(events_src, events_dst, src_account: str, dst_acco
                     if targets_response.get("Targets"):
                         new_targets = []
                         for target in targets_response["Targets"]:
+                            # 원본 ARN 유효성 검증
+                            src_target_arn = target["Arn"]
+                            if not is_valid_arn(src_target_arn):
+                                logger.error(f"  [SKIP] 유효하지 않은 타겟 ARN: {src_target_arn}")
+                                continue
+
                             new_target = {
                                 "Id": target["Id"],
-                                "Arn": target["Arn"]
+                                "Arn": src_target_arn
                             }
 
                             # Lambda ARN 교체
-                            if "lambda" in target["Arn"]:
-                                mapped_arn = LAMBDA_ARN_MAP.get(target["Arn"])
+                            if "lambda" in src_target_arn:
+                                mapped_arn = LAMBDA_ARN_MAP.get(src_target_arn)
                                 if mapped_arn:
                                     new_target["Arn"] = mapped_arn
-                                    logger.info(f"  Lambda 타겟 매핑: {target['Arn']} -> {mapped_arn}")
+                                    logger.info(f"  Lambda 타겟 매핑: {src_target_arn} -> {mapped_arn}")
                                 else:
                                     # 계정 ID만 교체
-                                    new_target["Arn"] = target["Arn"].replace(src_account, dst_account)
+                                    new_target["Arn"] = src_target_arn.replace(src_account, dst_account)
                                     logger.warning(f"  매핑 없음, 계정만 교체: {new_target['Arn']}")
 
                             # StepFunction ARN 교체
-                            elif "states" in target["Arn"]:
-                                mapped_arn = SFN_ARN_MAP.get(target["Arn"])
+                            elif "states" in src_target_arn:
+                                mapped_arn = SFN_ARN_MAP.get(src_target_arn)
                                 if mapped_arn:
                                     new_target["Arn"] = mapped_arn
-                                    logger.info(f"  StepFunction 타겟 매핑: {target['Arn']} -> {mapped_arn}")
+                                    logger.info(f"  StepFunction 타겟 매핑: {src_target_arn} -> {mapped_arn}")
                                 else:
-                                    new_target["Arn"] = target["Arn"].replace(src_account, dst_account)
+                                    # 계정 ID만 교체
+                                    new_target["Arn"] = src_target_arn.replace(src_account, dst_account)
                                     logger.warning(f"  매핑 없음, 계정만 교체: {new_target['Arn']}")
 
                             # 기타 ARN (SQS, SNS 등)은 계정 교체
                             else:
-                                new_target["Arn"] = target["Arn"].replace(src_account, dst_account)
+                                new_target["Arn"] = src_target_arn.replace(src_account, dst_account)
+
+                            # 변환된 ARN 유효성 검증
+                            if not is_valid_arn(new_target["Arn"]):
+                                logger.error(f"  [SKIP] 변환된 ARN이 유효하지 않음: {src_target_arn} -> {new_target['Arn']}")
+                                continue
 
                             # 추가 설정 복사
                             if target.get("RoleArn"):
