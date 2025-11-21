@@ -10,10 +10,12 @@
 
 다음 리소스들이 의존성 역순으로 삭제됩니다:
 
-1. **EventBridge Rules** - Lambda, Step Functions를 참조하므로 먼저 삭제
-2. **Step Functions** - Lambda를 참조하므로 두 번째로 삭제
-3. **Lambda Functions** - Layer를 참조하므로 세 번째로 삭제
-4. **Lambda Layers** - 마지막으로 삭제
+1. **EventBridge Schedules** - Lambda, Step Functions를 참조하므로 가장 먼저 삭제
+2. **EventBridge Schedule Groups** - Schedules가 먼저 삭제되어야 함
+3. **EventBridge Rules** - Lambda, Step Functions를 참조하므로 세 번째로 삭제
+4. **Step Functions** - Lambda를 참조하므로 네 번째로 삭제
+5. **Lambda Functions** - Layer를 참조하므로 다섯 번째로 삭제
+6. **Lambda Layers** - 마지막으로 삭제
 
 ## 사용법
 
@@ -92,6 +94,13 @@ $ python3 cleanup_migrated_resources.py
   - schedule-rule-2
   - event-rule-1
 
+⏰ EventBridge Schedules: 2개
+  - my-schedule-1 (그룹: default)
+  - my-schedule-2 (그룹: my-group)
+
+📁 EventBridge Schedule Groups: 1개
+  - my-group
+
 ==================================================
 
 ⚠️  위 리소스들을 모두 삭제하시겠습니까? (yes/no): yes
@@ -106,6 +115,8 @@ $ python3 cleanup_migrated_resources.py
 ======================================================================
 ✅ 전체 리소스 정리 완료!
 ======================================================================
+EventBridge Schedules: 2개 삭제
+EventBridge Schedule Groups: 1개 삭제
 EventBridge Rules: 3개 삭제
 Step Functions: 2개 삭제
 Lambda Functions: 5개 삭제
@@ -146,6 +157,12 @@ Lambda Layers: 2개 삭제
 - `events:ListRules`
 - `events:ListTargetsByRule`
 - `events:RemoveTargets`
+- `scheduler:DeleteSchedule`
+- `scheduler:DeleteScheduleGroup`
+- `scheduler:GetSchedule`
+- `scheduler:GetScheduleGroup`
+- `scheduler:ListSchedules`
+- `scheduler:ListScheduleGroups`
 
 ### Throttling 오류
 

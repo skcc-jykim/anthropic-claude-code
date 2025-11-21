@@ -57,6 +57,7 @@ ROLE_MAP: Dict[str, str] = {}
 LAYER_MAP: Dict[str, str] = {}
 LAMBDA_ARN_MAP: Dict[str, str] = {}  # 소스 ARN -> 대상 ARN
 SFN_ARN_MAP: Dict[str, str] = {}  # 소스 ARN -> 대상 ARN
+SCHEDULE_GROUP_ARN_MAP: Dict[str, str] = {}  # 소스 ARN -> 대상 ARN
 
 # 재시도 설정
 MAX_RETRIES = 3
@@ -655,6 +656,269 @@ def migrate_eventbridge_rules(events_src, events_dst, src_account: str, dst_acco
 
 
 # ===================================================
+# EventBridge Scheduler 마이그레이션
+# ===================================================
+@retry_on_throttle
+def migrate_schedule_groups(scheduler_src, scheduler_dst):
+    """EventBridge Scheduler 일정 그룹 마이그레이션"""
+
+    logger.info("\n" + "="*50)
+    logger.info("📁 EventBridge Scheduler 그룹 마이그레이션 시작")
+    logger.info("="*50)
+
+    try:
+        paginator = scheduler_src.get_paginator("list_schedule_groups")
+
+        for page in paginator.paginate():
+            for group in page.get("ScheduleGroups", []):
+                group_name = group["Name"]
+
+                if NAME_PREFIX and not group_name.startswith(NAME_PREFIX):
+                    continue
+
+                # 'default' 그룹은 이미 존재하므로 skip
+                if group_name == "default":
+                    logger.info(f"  [SKIP] default 그룹은 자동 생성됨")
+                    continue
+
+                logger.info(f"\n{'='*50}")
+                logger.info(f"🔄 그룹 마이그레이션 중: {group_name}")
+                logger.info(f"{'='*50}")
+
+                try:
+                    # 그룹 상세 정보 가져오기
+                    group_detail = scheduler_src.get_schedule_group(Name=group_name)
+                    src_arn = group_detail["Arn"]
+
+                    # 대상 계정에 그룹 존재 여부 확인
+                    group_exists = False
+                    try:
+                        scheduler_dst.get_schedule_group(Name=group_name)
+                        group_exists = True
+                        logger.info(f"  그룹이 이미 존재함: {group_name}")
+                    except ClientError as e:
+                        if e.response["Error"]["Code"] != "ResourceNotFoundException":
+                            raise
+
+                    if not group_exists:
+                        # 그룹 생성
+                        params = {
+                            "Name": group_name
+                        }
+
+                        if group_detail.get("Description"):
+                            params["Description"] = group_detail["Description"]
+
+                        response = scheduler_dst.create_schedule_group(**params)
+                        dst_arn = response["ScheduleGroupArn"]
+                        logger.info(f"  ✔ 그룹 생성 완료: {group_name}")
+                    else:
+                        # 이미 존재하는 그룹의 ARN 가져오기
+                        dst_group = scheduler_dst.get_schedule_group(Name=group_name)
+                        dst_arn = dst_group["Arn"]
+
+                    # ARN 매핑 저장
+                    SCHEDULE_GROUP_ARN_MAP[src_arn] = dst_arn
+
+                    # 태그 복제
+                    try:
+                        tags_response = scheduler_src.list_tags_for_resource(ResourceArn=src_arn)
+                        if tags_response.get("Tags"):
+                            scheduler_dst.tag_resource(
+                                ResourceArn=dst_arn,
+                                Tags=tags_response["Tags"]
+                            )
+                            logger.info(f"  ✔ 태그 복제 완료 ({len(tags_response['Tags'])}개)")
+                    except ClientError as e:
+                        logger.warning(f"  [WARN] 태그 복제 실패: {e}")
+
+                except Exception as e:
+                    logger.error(f"  ❌ 오류 발생: {group_name} - {e}")
+                    continue
+
+        logger.info(f"\n📁 Schedule Groups 마이그레이션 완료! (총 {len(SCHEDULE_GROUP_ARN_MAP)}개)")
+
+    except Exception as e:
+        logger.error(f"❌ Schedule Groups 마이그레이션 실패: {e}")
+        raise
+
+
+@retry_on_throttle
+def migrate_schedules(scheduler_src, scheduler_dst, src_account: str, dst_account: str):
+    """EventBridge Scheduler 일정 마이그레이션"""
+
+    logger.info("\n" + "="*50)
+    logger.info("⏰ EventBridge Scheduler 일정 마이그레이션 시작")
+    logger.info("="*50)
+
+    schedule_count = 0
+
+    try:
+        # 모든 Schedule Groups에서 일정 가져오기
+        group_names = ["default"]  # 기본 그룹
+
+        # 사용자 정의 그룹 추가
+        try:
+            paginator = scheduler_src.get_paginator("list_schedule_groups")
+            for page in paginator.paginate():
+                for group in page.get("ScheduleGroups", []):
+                    group_name = group["Name"]
+                    if group_name != "default":
+                        if not NAME_PREFIX or group_name.startswith(NAME_PREFIX):
+                            group_names.append(group_name)
+        except Exception as e:
+            logger.warning(f"  [WARN] Schedule Groups 목록 가져오기 실패: {e}")
+
+        # 각 그룹의 일정 마이그레이션
+        for group_name in group_names:
+            logger.info(f"\n그룹: {group_name}")
+
+            try:
+                paginator = scheduler_src.get_paginator("list_schedules")
+
+                for page in paginator.paginate(GroupName=group_name):
+                    for schedule in page.get("Schedules", []):
+                        schedule_name = schedule["Name"]
+
+                        if NAME_PREFIX and not schedule_name.startswith(NAME_PREFIX):
+                            continue
+
+                        logger.info(f"\n{'='*50}")
+                        logger.info(f"🔄 일정 마이그레이션 중: {schedule_name} (그룹: {group_name})")
+                        logger.info(f"{'='*50}")
+
+                        try:
+                            # 일정 상세 정보 가져오기
+                            schedule_detail = scheduler_src.get_schedule(
+                                Name=schedule_name,
+                                GroupName=group_name
+                            )
+
+                            # 일정 생성 파라미터
+                            params = {
+                                "Name": schedule_name,
+                                "GroupName": group_name,
+                                "ScheduleExpression": schedule_detail["ScheduleExpression"],
+                                "FlexibleTimeWindow": schedule_detail["FlexibleTimeWindow"],
+                                "Target": schedule_detail["Target"]
+                            }
+
+                            # 스케줄 표현식 로깅
+                            logger.info(f"  스케줄: {schedule_detail['ScheduleExpression']}")
+
+                            # Description
+                            if schedule_detail.get("Description"):
+                                params["Description"] = schedule_detail["Description"]
+
+                            # State
+                            if schedule_detail.get("State"):
+                                params["State"] = schedule_detail["State"]
+
+                            # Start/End Date
+                            if schedule_detail.get("StartDate"):
+                                params["StartDate"] = schedule_detail["StartDate"]
+
+                            if schedule_detail.get("EndDate"):
+                                params["EndDate"] = schedule_detail["EndDate"]
+
+                            # Schedule Expression Timezone
+                            if schedule_detail.get("ScheduleExpressionTimezone"):
+                                params["ScheduleExpressionTimezone"] = schedule_detail["ScheduleExpressionTimezone"]
+
+                            # KMS Key
+                            if schedule_detail.get("KmsKeyArn"):
+                                params["KmsKeyArn"] = schedule_detail["KmsKeyArn"].replace(src_account, dst_account)
+
+                            # Target ARN 매핑
+                            target = params["Target"]
+                            target_arn = target["Arn"]
+
+                            # Lambda ARN 교체
+                            if "lambda" in target_arn:
+                                mapped_arn = LAMBDA_ARN_MAP.get(target_arn)
+                                if mapped_arn:
+                                    target["Arn"] = mapped_arn
+                                    logger.info(f"  Lambda 타겟 매핑: {target_arn} -> {mapped_arn}")
+                                else:
+                                    target["Arn"] = target_arn.replace(src_account, dst_account)
+                                    logger.warning(f"  매핑 없음, 계정만 교체: {target['Arn']}")
+
+                            # Step Functions ARN 교체
+                            elif "states" in target_arn:
+                                mapped_arn = SFN_ARN_MAP.get(target_arn)
+                                if mapped_arn:
+                                    target["Arn"] = mapped_arn
+                                    logger.info(f"  StepFunction 타겟 매핑: {target_arn} -> {mapped_arn}")
+                                else:
+                                    target["Arn"] = target_arn.replace(src_account, dst_account)
+                                    logger.warning(f"  매핑 없음, 계정만 교체: {target['Arn']}")
+
+                            # 기타 ARN (SQS, SNS, EventBridge 등)
+                            else:
+                                target["Arn"] = target_arn.replace(src_account, dst_account)
+                                logger.info(f"  타겟 ARN 계정 교체: {target['Arn']}")
+
+                            # Role ARN 매핑
+                            if target.get("RoleArn"):
+                                target["RoleArn"] = map_role(target["RoleArn"])
+
+                            # DeadLetterConfig
+                            if target.get("DeadLetterConfig"):
+                                dlq_arn = target["DeadLetterConfig"]["Arn"]
+                                target["DeadLetterConfig"]["Arn"] = dlq_arn.replace(src_account, dst_account)
+
+                            # 일정 생성/업데이트
+                            schedule_exists = False
+                            try:
+                                scheduler_dst.get_schedule(Name=schedule_name, GroupName=group_name)
+                                schedule_exists = True
+                            except ClientError as e:
+                                if e.response["Error"]["Code"] != "ResourceNotFoundException":
+                                    raise
+
+                            if schedule_exists:
+                                logger.info(f"  기존 일정 업데이트 중...")
+                                scheduler_dst.update_schedule(**params)
+                                logger.info(f"  ✔ 업데이트 완료: {schedule_name}")
+                            else:
+                                logger.info(f"  새 일정 생성 중...")
+                                scheduler_dst.create_schedule(**params)
+                                logger.info(f"  ✔ 생성 완료: {schedule_name}")
+
+                            schedule_count += 1
+
+                            # 태그 복제
+                            try:
+                                src_schedule_arn = schedule_detail["Arn"]
+                                tags_response = scheduler_src.list_tags_for_resource(ResourceArn=src_schedule_arn)
+                                if tags_response.get("Tags"):
+                                    # 대상 일정 ARN 생성
+                                    dst_schedule = scheduler_dst.get_schedule(Name=schedule_name, GroupName=group_name)
+                                    dst_schedule_arn = dst_schedule["Arn"]
+                                    scheduler_dst.tag_resource(
+                                        ResourceArn=dst_schedule_arn,
+                                        Tags=tags_response["Tags"]
+                                    )
+                                    logger.info(f"  ✔ 태그 복제 완료 ({len(tags_response['Tags'])}개)")
+                            except ClientError as e:
+                                logger.warning(f"  [WARN] 태그 복제 실패: {e}")
+
+                        except Exception as e:
+                            logger.error(f"  ❌ 오류 발생: {schedule_name} - {e}")
+                            continue
+
+            except Exception as e:
+                logger.error(f"  ❌ 그룹 {group_name}의 일정 처리 실패: {e}")
+                continue
+
+        logger.info(f"\n⏰ Schedules 마이그레이션 완료! (총 {schedule_count}개)")
+
+    except Exception as e:
+        logger.error(f"❌ Schedules 마이그레이션 실패: {e}")
+        raise
+
+
+# ===================================================
 # 실행
 # ===================================================
 def main():
@@ -687,6 +951,8 @@ def main():
     sfn_dst = dst_sess.client("stepfunctions")
     events_src = src_sess.client("events")
     events_dst = dst_sess.client("events")
+    scheduler_src = src_sess.client("scheduler")
+    scheduler_dst = dst_sess.client("scheduler")
 
     try:
         # 1) Layer 먼저 복제
@@ -701,12 +967,21 @@ def main():
         # 4) EventBridge 규칙 복제
         migrate_eventbridge_rules(events_src, events_dst, src_account, dst_account)
 
+        # 5) EventBridge Scheduler 그룹 복제
+        migrate_schedule_groups(scheduler_src, scheduler_dst)
+
+        # 6) EventBridge Scheduler 일정 복제
+        migrate_schedules(scheduler_src, scheduler_dst, src_account, dst_account)
+
         logger.info("\n" + "="*70)
         logger.info("✅ 전체 마이그레이션 완료!")
         logger.info("="*70)
         logger.info(f"Layer: {len(LAYER_MAP)}개")
         logger.info(f"Lambda: {len(LAMBDA_ARN_MAP)}개")
         logger.info(f"Step Functions: {len(SFN_ARN_MAP)}개")
+        logger.info(f"Schedule Groups: {len(SCHEDULE_GROUP_ARN_MAP)}개")
+        logger.info(f"EventBridge Rules: (복제 완료)")
+        logger.info(f"EventBridge Schedules: (복제 완료)")
         logger.info("="*70)
 
     except Exception as e:

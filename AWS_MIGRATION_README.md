@@ -1,6 +1,6 @@
 # AWS 리소스 마이그레이션 도구
 
-AWS 계정 간 Lambda, Step Functions, EventBridge 규칙을 자동으로 마이그레이션하는 Python 스크립트입니다.
+AWS 계정 간 Lambda, Step Functions, EventBridge 규칙 및 EventBridge Scheduler를 자동으로 마이그레이션하는 Python 스크립트입니다.
 
 ## 주요 기능
 
@@ -34,6 +34,21 @@ AWS 계정 간 Lambda, Step Functions, EventBridge 규칙을 자동으로 마이
    - 재시도 정책
    - DLQ 설정
    - 태그
+
+5. **EventBridge Scheduler (신규 추가)**
+   - Schedule Groups
+     - 그룹 이름 및 설명
+     - 태그
+   - Schedules
+     - 스케줄 표현식 (at, rate, cron)
+     - Flexible Time Window
+     - 타임존 설정
+     - 시작/종료 날짜
+     - 타겟 설정 (Lambda, Step Functions, SQS, SNS, EventBridge 등)
+     - Lambda/Step Functions ARN 자동 매핑
+     - Retry Policy
+     - DLQ 설정
+     - 태그
 
 ### 🔧 개선 사항 (기존 코드 대비)
 
@@ -130,13 +145,15 @@ python migrate_aws_resources.py
 2. **Lambda Functions** - 함수 코드 및 설정 복제
 3. **Step Functions** - 상태 머신 정의 복제 (Lambda ARN 자동 업데이트)
 4. **EventBridge Rules** - 이벤트 규칙 및 타겟 복제
+5. **EventBridge Schedule Groups** - 일정 그룹 복제
+6. **EventBridge Schedules** - 일정 복제 (Lambda/Step Functions ARN 자동 업데이트)
 
 ## 주의사항
 
 ### ⚠️ 사전 확인 필요
 
 1. **IAM 권한**
-   - 소스 계정: Lambda, Step Functions, EventBridge 읽기 권한
+   - 소스 계정: Lambda, Step Functions, EventBridge, EventBridge Scheduler 읽기 권한
    - 대상 계정: 위 서비스들의 생성/수정 권한
 
 2. **네트워크 리소스**
