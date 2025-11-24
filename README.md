@@ -28,7 +28,16 @@ AWS Secrets Manager 리소스를 마이그레이션합니다:
 - ✅ **Tags** - 태그 복제
 - ✅ **Rotation** - 자동 로테이션 설정
 
-### 4. verify_migration_from_excel.py
+### 4. migrate_ecr.py
+ECR (Elastic Container Registry) 리포지토리 및 이미지를 마이그레이션합니다:
+
+- ✅ **ECR Repositories** - 리포지토리 생성 및 복제
+- ✅ **Container Images** - Docker 이미지 마이그레이션
+- ✅ **Repository Policies** - 리포지토리 정책 복제
+- ✅ **Lifecycle Policies** - 라이프사이클 정책 복제
+- ✅ **Repository Settings** - 이미지 스캔, 암호화 설정 복제
+
+### 5. verify_migration_from_excel.py
 엑셀 파일로 관리하는 마이그레이션 체크리스트를 기반으로 실제 이관 완료 여부를 검증합니다:
 
 - ✅ **Lambda** - 함수 존재 여부 확인
@@ -185,6 +194,46 @@ export NAME_PREFIX=""  # 특정 접두사로 시작하는 리소스만 마이그
 python3 migrate_secrets_manager.py
 ```
 
+### ECR (Elastic Container Registry) 마이그레이션
+
+**사전 요구사항**: Docker가 설치되어 있고 실행 중이어야 합니다.
+
+```bash
+# 환경변수 설정
+export SRC_PROFILE=src
+export DST_PROFILE=dst
+export AWS_REGION=ap-northeast-2
+export NAME_PREFIX=""  # 특정 접두사로 시작하는 리포지토리만 마이그레이션
+export MAX_IMAGES_PER_REPO=10  # 리포지토리당 최대 이미지 수 (기본값: 10)
+
+# 실행
+python3 migrate_ecr.py
+```
+
+#### ECR 선택적 마이그레이션
+
+```bash
+# 방법 1: 환경 변수로 리포지토리 목록 지정
+export ECR_REPOSITORIES="my-app-backend,my-app-frontend,lambda-functions/data-processor"
+python3 migrate_ecr.py
+
+# 방법 2: 파일로 리포지토리 목록 지정
+cat > ecr_repositories.txt << 'EOF'
+# 마이그레이션할 ECR 리포지토리 목록
+my-app-backend
+my-app-frontend
+lambda-functions/data-processor
+EOF
+
+export ECR_REPOSITORIES_FILE="ecr_repositories.txt"
+python3 migrate_ecr.py
+```
+
+**참고**:
+- `migrate_aws_resources.py`는 Lambda 컨테이너 이미지를 위한 ECR 이미지를 자동으로 마이그레이션합니다
+- `migrate_ecr.py`는 독립적인 ECR 리포지토리 및 이미지 마이그레이션을 위한 스크립트입니다
+- Docker daemon이 실행 중이어야 하며, 충분한 디스크 공간이 필요합니다
+
 ### 마이그레이션 검증 (엑셀 기반)
 
 ```bash
@@ -297,6 +346,9 @@ python3 verify_migration_from_excel.py
 | **`LAMBDA_EXCLUDE_PATTERN`** | **제외할 Lambda 함수 패턴 (쉼표 구분)** | `` |
 | **`SKIP_MISSING_LAYERS`** | **매핑되지 않은 Layer 제외 여부** | `true` |
 | **`FAIL_ON_MISSING_LAYERS`** | **Layer 매핑 실패 시 마이그레이션 중단 여부** | `false` |
+| **`ECR_REPOSITORIES`** | **쉼표로 구분된 ECR 리포지토리 이름 목록** | `` |
+| **`ECR_REPOSITORIES_FILE`** | **ECR 리포지토리 목록 파일 경로** | `` |
+| **`MAX_IMAGES_PER_REPO`** | **리포지토리당 최대 이미지 수** | `10` |
 | `DEFAULT_DEST_LAMBDA_ROLE` | Lambda 기본 실행 Role ARN | (필수) |
 | `DEFAULT_DEST_SFN_ROLE` | Step Functions 기본 실행 Role ARN | (필수) |
 | `EVENTBRIDGE_RULES_ROLE_ARN` | EventBridge Rules 실행 Role ARN | (자동 생성) |
@@ -399,6 +451,16 @@ ROLE_MAP = {
        --principal <DEST_ACCOUNT_ID> \
        --profile src
      ```
+
+### migrate_ecr.py
+1. **Docker 필수**: 실행 환경에 Docker가 설치되어 있어야 하며 Docker daemon이 실행 중이어야 함
+2. **디스크 공간**: 이미지 Pull/Push를 위한 충분한 디스크 공간 필요
+3. **네트워크**: ECR에 접근 가능한 네트워크 연결 필요
+4. **타임아웃**: 큰 이미지는 Pull/Push에 시간이 오래 걸릴 수 있음 (기본 타임아웃: 10분)
+5. **이미지 수 제한**: `MAX_IMAGES_PER_REPO`로 리포지토리당 마이그레이션할 이미지 수 제한 가능
+6. **권한**:
+   - 소스 계정: ECR 읽기 권한
+   - 대상 계정: ECR 쓰기 권한 (리포지토리 생성, 이미지 푸시)
 
 ### migrate_api_gateway.py
 1. **Lambda 권한 추가**: API Gateway가 Lambda를 호출하려면 추가 권한 필요
