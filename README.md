@@ -21,14 +21,32 @@ API Gateway 리소스를 마이그레이션합니다:
 - ✅ **API Keys** - 키 및 설정
 - ✅ **Usage Plans** - 할당량, 스로틀링, API 연결
 
+### 3. migrate_secrets_manager.py
+AWS Secrets Manager 리소스를 마이그레이션합니다:
+
+- ✅ **Secrets** - 시크릿 값 및 메타데이터
+- ✅ **Tags** - 태그 복제
+- ✅ **Rotation** - 자동 로테이션 설정
+
+### 4. verify_migration_from_excel.py
+엑셀 파일로 관리하는 마이그레이션 체크리스트를 기반으로 실제 이관 완료 여부를 검증합니다:
+
+- ✅ **Lambda** - 함수 존재 여부 확인
+- ✅ **Step Functions** - 상태 머신 존재 여부 확인
+- ✅ **EventBridge Rules** - 규칙 존재 여부 확인
+- ✅ **EventBridge Scheduler** - 스케줄 존재 여부 확인
+- ✅ **API Gateway** - REST API 존재 여부 확인
+- ✅ **Secrets Manager** - 시크릿 존재 여부 확인
+- ✅ **엑셀 결과 출력** - 검증 결과를 엑셀 파일로 저장
+
 ## 🚀 사용 방법
 
 ### 사전 요구사항
 
 1. **Python 3.7+** 설치
-2. **boto3** 라이브러리 설치:
+2. **boto3, openpyxl** 라이브러리 설치:
    ```bash
-   pip install boto3 requests
+   pip install boto3 requests openpyxl
    ```
 
 3. **AWS 자격증명 설정**:
@@ -84,6 +102,50 @@ export LAMBDA_ARN_MAP='{
 python3 migrate_api_gateway.py
 ```
 
+### Secrets Manager 마이그레이션
+
+```bash
+# 환경변수 설정
+export SRC_PROFILE=src
+export DST_PROFILE=dst
+export AWS_REGION=ap-northeast-2
+export NAME_PREFIX=""  # 특정 접두사로 시작하는 리소스만 마이그레이션하려면 설정
+
+# 실행
+python3 migrate_secrets_manager.py
+```
+
+### 마이그레이션 검증 (엑셀 기반)
+
+```bash
+# 1. 엑셀 템플릿 생성
+python3 create_migration_checklist_template.py
+
+# 또는 커스텀 파일명으로 생성
+python3 create_migration_checklist_template.py -o my_checklist.xlsx
+
+# 2. 생성된 엑셀 파일에 마이그레이션 대상 리소스 입력
+#    - 리소스 타입: Lambda, StepFunction, EventBridgeRule, EventBridgeSchedule, APIGateway, SecretsManager
+#    - 리소스 이름: AWS 리소스 이름 (ARN 아님)
+#    - 소스/대상 계정 ID 입력
+
+# 3. 입력 완료 후 파일을 'migration_checklist.xlsx'로 저장
+
+# 4. 검증 스크립트 실행
+export DST_PROFILE=dst
+export AWS_REGION=ap-northeast-2
+export EXCEL_FILE_PATH=migration_checklist.xlsx
+export OUTPUT_FILE_PATH=migration_verification_result.xlsx
+
+python3 verify_migration_from_excel.py
+
+# 5. 결과 확인
+#    - migration_verification_result.xlsx 파일 확인
+#    - 이관 완료: 녹색 배경
+#    - 이관 미완료: 빨간색 배경
+#    - 콘솔에서도 요약 통계 확인 가능
+```
+
 ## 📝 주요 기능
 
 ### migrate_aws_resources.py
@@ -126,6 +188,30 @@ python3 migrate_api_gateway.py
 - Usage Plan과 API 연결 자동 매핑
 - 할당량 및 스로틀링 설정 복제
 
+### verify_migration_from_excel.py
+
+#### 1. 엑셀 기반 체크리스트 관리
+- 마이그레이션 대상 리소스를 엑셀로 관리
+- 리소스 타입, 이름, 계정 정보 입력
+- 검증 결과 자동 업데이트
+
+#### 2. 다중 리소스 타입 지원
+- Lambda, Step Functions, EventBridge, API Gateway, Secrets Manager
+- 각 리소스 타입별 자동 검증
+- 존재 여부 실시간 확인
+
+#### 3. 시각적 결과 표시
+- 이관 완료: 녹색 배경
+- 이관 미완료: 빨간색 배경
+- 검증 일시 자동 기록
+- 비고 필드에 상세 정보
+
+#### 4. 통계 및 리포팅
+- 전체 이관 진행률
+- 리소스 타입별 통계
+- 미완료 리소스 목록 출력
+- 엑셀 파일로 결과 저장
+
 ## ⚙️ 설정 옵션
 
 ### 환경변수
@@ -141,6 +227,9 @@ python3 migrate_api_gateway.py
 | `EVENTBRIDGE_RULES_ROLE_ARN` | EventBridge Rules 실행 Role ARN | (자동 생성) |
 | `EVENTBRIDGE_SCHEDULER_ROLE_ARN` | EventBridge Scheduler 실행 Role ARN | (자동 생성) |
 | `LAMBDA_ARN_MAP` | Lambda ARN 매핑 JSON | `{}` |
+| `EXCEL_FILE_PATH` | 입력 엑셀 파일 경로 (검증 스크립트) | `migration_checklist.xlsx` |
+| `OUTPUT_FILE_PATH` | 출력 엑셀 파일 경로 (검증 스크립트) | `migration_verification_result.xlsx` |
+| `SHEET_NAME` | 엑셀 시트 이름 (검증 스크립트) | `Migration List` |
 
 ### 코드 내 매핑 설정
 
@@ -232,6 +321,21 @@ ROLE_MAP = {
 2. **Custom Domain**: 커스텀 도메인은 별도 설정 필요
 3. **VPC Link**: VPC Link는 별도 마이그레이션 필요
 4. **API Gateway v2 (HTTP/WebSocket)**: 현재는 REST API만 지원
+
+### verify_migration_from_excel.py
+1. **엑셀 파일 형식**:
+   - 'Migration List' 시트 이름 필수
+   - 헤더 행(첫 번째 행) 삭제 금지
+   - 리소스 타입은 정확하게 입력 (대소문자 구분)
+
+2. **리소스 이름 형식**:
+   - Lambda: 함수 이름만 (ARN 아님)
+   - StepFunction: 상태 머신 이름만
+   - EventBridgeSchedule: `그룹명/스케줄명` 또는 `스케줄명`만
+   - 기타: 리소스 이름만
+
+3. **권한**: 대상 계정에 리소스 조회 권한 필요
+4. **openpyxl 라이브러리**: `pip install openpyxl` 필수
 
 ## 🔒 보안 고려사항
 
