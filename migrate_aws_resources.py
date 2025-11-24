@@ -33,6 +33,10 @@ LAMBDA_FUNCTIONS = os.getenv("LAMBDA_FUNCTIONS", "")  # 쉼표로 구분된 함�
 LAMBDA_FUNCTIONS_FILE = os.getenv("LAMBDA_FUNCTIONS_FILE", "")  # 함수 목록 파일 경로
 LAMBDA_EXCLUDE_PATTERN = os.getenv("LAMBDA_EXCLUDE_PATTERN", "")  # 제외할 패턴 (쉼표 구분)
 
+# Layer 처리 설정
+SKIP_MISSING_LAYERS = os.getenv("SKIP_MISSING_LAYERS", "true").lower() in ("true", "1", "yes")  # 매핑되지 않은 Layer 제외
+FAIL_ON_MISSING_LAYERS = os.getenv("FAIL_ON_MISSING_LAYERS", "false").lower() in ("true", "1", "yes")  # 매핑 없으면 실패
+
 # 매핑에 없으면 이 Role 적용
 DEFAULT_DEST_LAMBDA_ROLE = os.getenv(
     "DEFAULT_DEST_LAMBDA_ROLE",
@@ -460,68 +464,110 @@ def migrate_layers(lambda_src, lambda_dst):
 
     paginator = lambda_src.get_paginator("list_layers")
 
+    layer_success_count = 0
+    layer_fail_count = 0
+    failed_layers = []
+
     with tempfile.TemporaryDirectory() as tmpdir:
         for page in paginator.paginate():
             for layer in page.get("Layers", []):
                 layer_name = layer["LayerName"]
                 logger.info(f"\n➡ Layer 처리 중: {layer_name}")
 
-                versions = lambda_src.list_layer_versions(LayerName=layer_name)["LayerVersions"]
+                try:
+                    versions = lambda_src.list_layer_versions(LayerName=layer_name)["LayerVersions"]
 
-                for v in versions:
-                    src_arn = v["LayerVersionArn"]
-                    version_number = v["Version"]
+                    for v in versions:
+                        src_arn = v["LayerVersionArn"]
+                        version_number = v["Version"]
 
-                    # 이미 매핑된 경우 skip
-                    if src_arn in LAYER_MAP:
-                        continue
+                        # 이미 매핑된 경우 skip
+                        if src_arn in LAYER_MAP:
+                            continue
 
-                    # Layer ZIP 다운로드
-                    layer_detail = lambda_src.get_layer_version(
-                        LayerName=layer_name,
-                        VersionNumber=version_number
-                    )
+                        try:
+                            # Layer ZIP 다운로드
+                            layer_detail = lambda_src.get_layer_version(
+                                LayerName=layer_name,
+                                VersionNumber=version_number
+                            )
 
-                    code_url = layer_detail["Content"]["Location"]
-                    zip_path = os.path.join(tmpdir, f"{layer_name}-{version_number}.zip")
+                            code_url = layer_detail["Content"]["Location"]
+                            zip_path = os.path.join(tmpdir, f"{layer_name}-{version_number}.zip")
 
-                    logger.info(f"  다운로드 중: {layer_name}:{version_number}")
-                    download_code(code_url, zip_path)
+                            logger.info(f"  다운로드 중: {layer_name}:{version_number}")
+                            download_code(code_url, zip_path)
 
-                    # 대상 계정에 Layer 버전 존재하는지 확인
-                    dst_versions = []
-                    try:
-                        dst_versions = lambda_dst.list_layer_versions(LayerName=layer_name).get("LayerVersions", [])
-                    except ClientError:
-                        dst_versions = []
+                            # 대상 계정에 Layer 버전 존재하는지 확인
+                            dst_versions = []
+                            try:
+                                dst_versions = lambda_dst.list_layer_versions(LayerName=layer_name).get("LayerVersions", [])
+                            except ClientError:
+                                dst_versions = []
 
-                    dst_arn = None
+                            dst_arn = None
 
-                    for dv in dst_versions:
-                        if dv["Version"] == version_number:
-                            dst_arn = dv["LayerVersionArn"]
-                            logger.info(f"  대상에 이미 존재: {dst_arn}")
-                            break
+                            for dv in dst_versions:
+                                if dv["Version"] == version_number:
+                                    dst_arn = dv["LayerVersionArn"]
+                                    logger.info(f"  대상에 이미 존재: {dst_arn}")
+                                    break
 
-                    # 대상 계정에 없으면 생성
-                    if not dst_arn:
-                        logger.info(f"  생성 중: {layer_name}:{version_number}")
-                        with open(zip_path, "rb") as f:
-                            content = f.read()
+                            # 대상 계정에 없으면 생성
+                            if not dst_arn:
+                                logger.info(f"  생성 중: {layer_name}:{version_number}")
+                                with open(zip_path, "rb") as f:
+                                    content = f.read()
 
-                        resp = lambda_dst.publish_layer_version(
-                            LayerName=layer_name,
-                            Content={"ZipFile": content},
-                            CompatibleRuntimes=layer_detail.get("CompatibleRuntimes", []),
-                            CompatibleArchitectures=layer_detail.get("CompatibleArchitectures", [])
-                        )
-                        dst_arn = resp["LayerVersionArn"]
+                                resp = lambda_dst.publish_layer_version(
+                                    LayerName=layer_name,
+                                    Content={"ZipFile": content},
+                                    CompatibleRuntimes=layer_detail.get("CompatibleRuntimes", []),
+                                    CompatibleArchitectures=layer_detail.get("CompatibleArchitectures", [])
+                                )
+                                dst_arn = resp["LayerVersionArn"]
 
-                    # 매핑 테이블에 등록
-                    LAYER_MAP[src_arn] = dst_arn
-                    logger.info(f"  ✔ 매핑 등록: {src_arn} -> {dst_arn}")
+                            # 매핑 테이블에 등록
+                            LAYER_MAP[src_arn] = dst_arn
+                            logger.info(f"  ✔ 매핑 등록: {src_arn} -> {dst_arn}")
+                            layer_success_count += 1
 
-    logger.info(f"\n🔧 Layer 마이그레이션 완료! (총 {len(LAYER_MAP)}개)")
+                        except ClientError as e:
+                            error_code = e.response['Error']['Code']
+                            error_msg = e.response['Error']['Message']
+                            logger.error(f"  ❌ Layer {layer_name}:{version_number} 마이그레이션 실패: {error_code} - {error_msg}")
+                            failed_layers.append(f"{layer_name}:{version_number} - {error_code}")
+                            layer_fail_count += 1
+                        except Exception as e:
+                            logger.error(f"  ❌ Layer {layer_name}:{version_number} 마이그레이션 실패: {e}")
+                            failed_layers.append(f"{layer_name}:{version_number} - {str(e)}")
+                            layer_fail_count += 1
+
+                except Exception as e:
+                    logger.error(f"  ❌ Layer {layer_name} 처리 실패: {e}")
+                    failed_layers.append(f"{layer_name} - {str(e)}")
+                    layer_fail_count += 1
+
+    # Layer 마이그레이션 요약
+    logger.info(f"\n{'='*50}")
+    logger.info(f"🔧 Layer 마이그레이션 완료!")
+    logger.info(f"{'='*50}")
+    logger.info(f"  ✅ 성공: {layer_success_count}개")
+    logger.info(f"  ❌ 실패: {layer_fail_count}개")
+    logger.info(f"  📊 총 매핑: {len(LAYER_MAP)}개")
+
+    if failed_layers:
+        logger.warning(f"\n⚠️  실패한 Layer 목록:")
+        for failed in failed_layers:
+            logger.warning(f"  - {failed}")
+        logger.warning(
+            f"\n💡 Layer 마이그레이션 실패 시 대처 방법:\n"
+            f"   1. SKIP_MISSING_LAYERS=true (기본값) - Layer 없이 Lambda 함수 마이그레이션\n"
+            f"   2. FAIL_ON_MISSING_LAYERS=true - Layer 매핑 실패 시 Lambda 마이그레이션 중단\n"
+            f"   3. 소스 계정의 Layer 접근 권한 확인\n"
+        )
+
+    logger.info(f"{'='*50}\n")
 
 
 # ===================================================
@@ -593,15 +639,47 @@ def migrate_lambdas(lambda_src, lambda_dst, src_account: str, dst_account: str):
                 # Layers → 자동 매핑된 LAYER_MAP 사용
                 if cfg.get("Layers"):
                     mapped = []
+                    missing_layers = []
+
                     for layer in cfg["Layers"]:
                         src_arn = layer["Arn"]
                         dst_arn = LAYER_MAP.get(src_arn)
+
                         if not dst_arn:
-                            logger.warning(f"  [WARN] Layer 매핑 없음 -> {src_arn} (원본 유지)")
-                            mapped.append(src_arn)
+                            missing_layers.append(src_arn)
+
+                            if FAIL_ON_MISSING_LAYERS:
+                                # 매핑이 없으면 오류 발생
+                                raise Exception(
+                                    f"Layer 매핑을 찾을 수 없습니다: {src_arn}\n"
+                                    f"해결 방법:\n"
+                                    f"1. migrate_layers()가 성공적으로 실행되었는지 확인\n"
+                                    f"2. 소스 계정의 Layer에 접근 권한이 있는지 확인\n"
+                                    f"3. SKIP_MISSING_LAYERS=true 로 설정하여 Layer 없이 마이그레이션\n"
+                                    f"4. FAIL_ON_MISSING_LAYERS=false 로 설정하여 경고만 표시"
+                                )
+                            elif SKIP_MISSING_LAYERS:
+                                # 매핑이 없으면 Layer 제외
+                                logger.warning(f"  ⚠️  Layer 매핑 없음 (제외됨): {src_arn}")
+                            else:
+                                # 원본 ARN 유지 (크로스 계정 접근 필요)
+                                logger.warning(
+                                    f"  ⚠️  Layer 매핑 없음 (원본 유지): {src_arn}\n"
+                                    f"       크로스 계정 Layer 접근 권한이 필요합니다!"
+                                )
+                                mapped.append(src_arn)
                         else:
                             mapped.append(dst_arn)
-                    common_params["Layers"] = mapped
+
+                    # 매핑된 Layer만 설정
+                    if mapped:
+                        common_params["Layers"] = mapped
+
+                    # 누락된 Layer 요약
+                    if missing_layers:
+                        logger.warning(f"  ⚠️  총 {len(missing_layers)}개의 Layer가 매핑되지 않았습니다")
+                        if SKIP_MISSING_LAYERS:
+                            logger.info(f"  ℹ️  SKIP_MISSING_LAYERS=true 이므로 Layer 없이 Lambda 함수를 생성합니다")
 
                 # VPC 설정
                 vpc_cfg = map_vpc_config(cfg.get("VpcConfig"))
