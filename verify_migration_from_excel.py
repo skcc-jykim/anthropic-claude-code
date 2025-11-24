@@ -328,8 +328,8 @@ def write_csv_results(file_path: str, results: List[Dict]):
                     row = {
                         '리소스 타입': result['resource_type'],
                         '리소스 이름': result['resource_name'],
-                        '소스 계정': '',
-                        '대상 계정': '',
+                        '소스 계정': result.get('source_account', ''),
+                        '대상 계정': result.get('dest_account', ''),
                         '마이그레이션 상태': '',
                         '검증 일시': '',
                         '비고': ''
@@ -339,6 +339,8 @@ def write_csv_results(file_path: str, results: List[Dict]):
                 status_icon = '✅' if result['exists'] else '❌'
                 row['리소스 타입'] = result['resource_type']
                 row['리소스 이름'] = result['resource_name']
+                row['소스 계정'] = result.get('source_account', row.get('소스 계정', ''))
+                row['대상 계정'] = result.get('dest_account', row.get('대상 계정', ''))
                 row['마이그레이션 상태'] = f"{status_icon} {result['status']}"
                 row['검증 일시'] = verification_time
                 row['비고'] = result['notes']
@@ -450,6 +452,10 @@ def write_excel_results(file_path: str, results: List[Dict]):
             # 리소스 타입과 이름 업데이트 (원본과 동일하게 유지)
             ws.cell(row=row_num, column=COL_RESOURCE_TYPE + 1, value=result['resource_type'])
             ws.cell(row=row_num, column=COL_RESOURCE_NAME + 1, value=result['resource_name'])
+
+            # 소스 계정과 대상 계정 업데이트
+            ws.cell(row=row_num, column=COL_SOURCE_ACCOUNT + 1, value=result.get('source_account', ''))
+            ws.cell(row=row_num, column=COL_DEST_ACCOUNT + 1, value=result.get('dest_account', ''))
 
             # 상태 업데이트
             status_cell = ws.cell(row=row_num, column=COL_STATUS + 1)
@@ -599,6 +605,8 @@ def main():
                 'row_number': item['row_number'],
                 'resource_type': resource_type,
                 'resource_name': resource_name,
+                'source_account': item.get('source_account', ''),
+                'dest_account': item.get('dest_account', ''),
                 'exists': False,
                 'status': '미지원',
                 'notes': f'지원하지 않는 리소스 타입: {resource_type}'
@@ -619,6 +627,8 @@ def main():
             'row_number': item['row_number'],
             'resource_type': resource_type,
             'resource_name': resource_name,
+            'source_account': item.get('source_account', ''),
+            'dest_account': item.get('dest_account', ''),
             'exists': exists,
             'status': status,
             'notes': notes
