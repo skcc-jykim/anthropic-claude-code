@@ -377,7 +377,12 @@ ROLE_MAP = {
 4. **비용**: 리소스 복제 시 비용 발생 가능
 
 ### migrate_aws_resources.py
-1. **Container 이미지 Lambda**: ECR 이미지는 별도 마이그레이션 필요
+1. **Container 이미지 Lambda**:
+   - ✅ ECR 컨테이너 이미지 기반 Lambda 함수 마이그레이션 지원
+   - **Docker 필수**: 실행 환경에 Docker가 설치되어 있어야 함
+   - ECR 이미지를 소스 계정에서 대상 계정으로 자동 복사
+   - 이미지 URI 및 ImageConfig 자동 매핑
+   - ECR 저장소가 대상 계정에 없으면 자동 생성
 2. **EventBridge 커스텀 버스**: 현재는 default 버스만 지원
 3. **Step Functions 로깅/추적**: 권한 문제로 비활성화됨
 4. **Lambda Layer 마이그레이션**:

@@ -24,11 +24,15 @@ AWS 계정 간 Lambda, Step Functions, EventBridge 규칙 및 EventBridge Schedu
    - Layer ARN 자동 매핑
 
 2. **Lambda Functions**
+   - **ZIP 및 컨테이너 이미지 기반 Lambda 모두 지원**
    - 함수 코드 및 설정
+     - ZIP 파일: 자동 다운로드 및 업로드
+     - **컨테이너 이미지 (NEW!)**: ECR 이미지 자동 복사
    - 환경 변수
    - VPC 설정 (서브넷, 보안 그룹)
    - IAM Role 매핑
-   - Layer 연결
+   - Layer 연결 (ZIP 기반 Lambda만)
+   - ImageConfig (컨테이너 이미지 Lambda)
    - 태그
    - 예약 동시성 설정
    - Dead Letter Queue (DLQ)
@@ -240,18 +244,14 @@ python migrate_aws_resources.py
 
 ### ⚠️ 지원하지 않는 기능
 
-1. **Container Image Lambda**
-   - `PackageType: Image`인 Lambda는 자동으로 스킵됨
-   - ECR 이미지를 별도로 마이그레이션해야 함
-
-2. **커스텀 EventBridge 버스**
+1. **커스텀 EventBridge 버스**
    - 현재는 `default` 이벤트 버스의 규칙만 마이그레이션
    - 커스텀 버스는 코드 수정 필요
 
-3. **Lambda@Edge**
+2. **Lambda@Edge**
    - CloudFront Lambda@Edge는 지원 안 함
 
-4. **암호화 키 (KMS)**
+3. **암호화 키 (KMS)**
    - 환경 변수 암호화에 사용된 KMS 키는 자동으로 매핑되지 않음
    - 별도로 KMS 키 설정 필요
 
