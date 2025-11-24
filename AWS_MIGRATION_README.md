@@ -407,6 +407,284 @@ ROLE_MAP = {
 2025-11-21 10:05:00 - INFO - ⏰ EventBridge Schedules: 복제 완료
 ```
 
+# AWS Secrets Manager 마이그레이션
+
+## 개요
+
+`migrate_secrets_manager.py` 스크립트는 AWS Secrets Manager의 시크릿을 계정 간 마이그레이션하는 도구입니다.
+
+## 마이그레이션 대상
+
+- **시크릿 값**: 문자열 및 바이너리 시크릿
+- **메타데이터**: 이름, 설명, 태그
+- **KMS 암호화 키**: 커스텀 KMS 키 매핑 지원
+- **버전 정보**: 현재 버전 및 스테이징 레이블
+
+## 사용 방법
+
+### 1. 환경 변수 설정
+
+```bash
+# 필수
+export SRC_PROFILE="src"
+export DST_PROFILE="dst"
+export AWS_REGION="ap-northeast-2"
+
+# 선택 (특정 이름 접두사만 마이그레이션)
+export NAME_PREFIX="prod-"
+
+# KMS 키 매핑 (선택적, JSON 형식)
+export KMS_KEY_MAP='{"arn:aws:kms:ap-northeast-2:111111111111:key/src-key-id":"arn:aws:kms:ap-northeast-2:222222222222:key/dst-key-id"}'
+```
+
+### 2. 스크립트 실행
+
+```bash
+python migrate_secrets_manager.py
+```
+
+## 기능 상세
+
+### ✅ 지원 기능
+
+1. **시크릿 생성/업데이트**
+   - 대상 계정에 시크릿이 없으면 새로 생성
+   - 이미 존재하면 값 및 메타데이터 업데이트
+
+2. **KMS 키 매핑**
+   - 환경 변수로 KMS 키 매핑 지정 가능
+   - AWS 관리형 키(`alias/aws/secretsmanager`) 자동 매핑
+   - 매핑이 없으면 대상 계정의 기본 키 사용
+
+3. **태그 복제**
+   - 소스 시크릿의 모든 태그를 대상 시크릿에 복제
+   - 기존 태그 제거 후 새 태그 적용
+
+4. **메타데이터 복제**
+   - Description
+   - 버전 정보
+   - 생성/수정 날짜
+
+5. **에러 처리**
+   - API Throttling 자동 재시도
+   - 개별 시크릿 실패 시 다음 시크릿 계속 진행
+   - 상세한 로그 및 통계 출력
+
+### ⚠️ 제한 사항
+
+1. **자동 회전 설정**
+   - 자동 회전 설정은 Lambda 함수 ARN이 필요하므로 자동 마이그레이션되지 않음
+   - 마이그레이션 후 수동으로 설정 필요
+   - 스크립트가 회전 설정 정보를 로그에 출력
+
+2. **리소스 정책**
+   - 시크릿의 리소스 정책(Resource Policy)은 마이그레이션되지 않음
+   - 필요시 수동으로 정책 복제 필요
+
+3. **버전 히스토리**
+   - 현재 버전만 마이그레이션됨
+   - 이전 버전 히스토리는 복제되지 않음
+
+4. **삭제 예정 시크릿**
+   - `DeletedDate`가 설정된 시크릿은 자동으로 스킵됨
+
+## KMS 키 매핑 예제
+
+### 케이스 1: AWS 관리형 키 사용
+
+소스와 대상 모두 AWS 관리형 키를 사용하는 경우, 별도 매핑 불필요:
+
+```bash
+# KMS_KEY_MAP 설정 없이 실행
+python migrate_secrets_manager.py
+```
+
+### 케이스 2: 커스텀 KMS 키 매핑
+
+커스텀 KMS 키를 사용하는 경우:
+
+```bash
+export KMS_KEY_MAP='{
+  "arn:aws:kms:ap-northeast-2:111111111111:key/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee": "arn:aws:kms:ap-northeast-2:222222222222:key/ffffffff-gggg-hhhh-iiii-jjjjjjjjjjjj",
+  "arn:aws:kms:ap-northeast-2:111111111111:key/11111111-2222-3333-4444-555555555555": "arn:aws:kms:ap-northeast-2:222222222222:key/66666666-7777-8888-9999-000000000000"
+}'
+
+python migrate_secrets_manager.py
+```
+
+### 케이스 3: 기본 키로 변경
+
+커스텀 KMS 키를 사용하던 시크릿을 AWS 관리형 기본 키로 변경:
+
+```bash
+# KMS_KEY_MAP을 비워두면 자동으로 기본 키 사용
+export KMS_KEY_MAP='{}'
+python migrate_secrets_manager.py
+```
+
+## IAM 권한 요구사항
+
+### 소스 계정
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:ListSecrets",
+        "secretsmanager:DescribeSecret",
+        "secretsmanager:GetSecretValue"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "kms:Decrypt",
+        "kms:DescribeKey"
+      ],
+      "Resource": "arn:aws:kms:*:*:key/*"
+    }
+  ]
+}
+```
+
+### 대상 계정
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:CreateSecret",
+        "secretsmanager:DescribeSecret",
+        "secretsmanager:UpdateSecret",
+        "secretsmanager:PutSecretValue",
+        "secretsmanager:TagResource",
+        "secretsmanager:UntagResource"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "kms:Encrypt",
+        "kms:Decrypt",
+        "kms:GenerateDataKey",
+        "kms:DescribeKey"
+      ],
+      "Resource": "arn:aws:kms:*:*:key/*"
+    }
+  ]
+}
+```
+
+## 로그 예시
+
+```
+2025-11-24 10:00:00 - INFO - 🔐 AWS Secrets Manager 마이그레이션 시작
+2025-11-24 10:00:01 - INFO - 소스 계정: 111111111111
+2025-11-24 10:00:01 - INFO - 대상 계정: 222222222222
+
+==================================================
+🔄 시크릿 마이그레이션 중: prod-api-key
+==================================================
+2025-11-24 10:00:02 - INFO -   시크릿 정보 조회 중...
+2025-11-24 10:00:03 - INFO -   시크릿 값 조회 중...
+2025-11-24 10:00:03 - INFO -   시크릿 버전: aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee
+2025-11-24 10:00:03 - INFO -   버전 스테이지: AWSCURRENT
+2025-11-24 10:00:04 - INFO -   새 시크릿 생성 필요
+2025-11-24 10:00:04 - INFO -   KMS 키: 기본 키 사용
+2025-11-24 10:00:05 - INFO -   새 시크릿 생성 중...
+2025-11-24 10:00:06 - INFO -   ✔ 시크릿 생성 완료: arn:aws:secretsmanager:ap-northeast-2:222222222222:secret:prod-api-key-AbCdEf
+
+==================================================
+✅ Secrets Manager 마이그레이션 완료!
+==================================================
+📊 통계:
+  - 전체 시크릿: 10개
+  - 생성: 7개
+  - 업데이트: 2개
+  - 실패: 0개
+  - 스킵: 1개
+==================================================
+```
+
+## 트러블슈팅
+
+### 1. KMS 권한 오류
+
+```
+AccessDeniedException: User is not authorized to perform: kms:Decrypt
+```
+
+**해결**:
+- 소스 계정: KMS 키에 대한 `kms:Decrypt` 권한 확인
+- 대상 계정: KMS 키에 대한 `kms:Encrypt`, `kms:GenerateDataKey` 권한 확인
+
+### 2. 시크릿이 비어있음
+
+```
+[WARN] 시크릿 값이 없음 (비어있음)
+```
+
+**해결**: 이는 정상적인 경우로, 시크릿이 생성되었지만 값이 설정되지 않은 상태입니다. 필요시 수동으로 값 설정.
+
+### 3. 자동 회전 설정 경고
+
+```
+⚠️  [주의] 소스 시크릿에 자동 회전이 활성화되어 있습니다
+```
+
+**해결**: 마이그레이션 후 대상 계정에서 수동으로 자동 회전 설정:
+
+```bash
+aws secretsmanager rotate-secret \
+  --secret-id prod-api-key \
+  --rotation-lambda-arn arn:aws:lambda:ap-northeast-2:222222222222:function:rotation-function \
+  --rotation-rules AutomaticallyAfterDays=30
+```
+
+### 4. Throttling 에러
+
+```
+TooManyRequestsException: Rate exceeded
+```
+
+**해결**: 스크립트가 자동으로 재시도하지만, 대량의 시크릿을 마이그레이션할 때는 배치 단위로 나누어 실행하는 것을 권장:
+
+```bash
+# 배치 1
+export NAME_PREFIX="prod-api-"
+python migrate_secrets_manager.py
+
+# 배치 2
+export NAME_PREFIX="prod-db-"
+python migrate_secrets_manager.py
+```
+
+## 보안 권장사항
+
+1. **시크릿 값 보안**
+   - 마이그레이션 후 불필요한 소스 시크릿은 삭제
+   - 민감한 시크릿은 마이그레이션 후 값 변경 권장
+
+2. **KMS 키 관리**
+   - 프로덕션 환경에서는 AWS 관리형 키보다 커스텀 KMS 키 사용 권장
+   - KMS 키 정책에서 최소 권한 원칙 적용
+
+3. **감사 로깅**
+   - CloudTrail에서 Secrets Manager API 호출 모니터링
+   - 마이그레이션 전후 시크릿 접근 로그 확인
+
+4. **VPC 엔드포인트**
+   - 프라이빗 서브넷에서 실행되는 애플리케이션의 경우 VPC 엔드포인트 설정
+   - 대상 계정에도 동일한 VPC 엔드포인트 구성 필요
+
 ## 라이선스
 
 MIT License
