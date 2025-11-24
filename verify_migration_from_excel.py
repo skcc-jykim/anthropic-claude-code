@@ -5,17 +5,19 @@ import os
 import json
 import boto3
 import logging
+import csv
 from typing import Dict, List, Optional, Set
 from botocore.exceptions import ClientError
 from datetime import datetime
 
-# openpyxl for Excel operations
+# openpyxl for Excel operations (optional, only needed for .xlsx files)
+OPENPYXL_AVAILABLE = False
 try:
     from openpyxl import load_workbook, Workbook
     from openpyxl.styles import PatternFill, Font
+    OPENPYXL_AVAILABLE = True
 except ImportError:
-    print("Error: openpyxl is required. Install it with: pip install openpyxl")
-    exit(1)
+    pass
 
 # ===================================================
 # 로깅 설정
@@ -202,14 +204,125 @@ def verify_resource(resource_type: str, resource_name: str) -> tuple[bool, str]:
 
 
 # ===================================================
+# 파일 형식 판별 함수
+# ===================================================
+
+def is_csv_file(file_path: str) -> bool:
+    """파일이 CSV 형식인지 확인"""
+    return file_path.lower().endswith('.csv')
+
+
+def is_excel_file(file_path: str) -> bool:
+    """파일이 Excel 형식인지 확인"""
+    return file_path.lower().endswith(('.xlsx', '.xls'))
+
+
+# ===================================================
+# CSV 처리 함수
+# ===================================================
+
+def read_csv_checklist(file_path: str) -> List[Dict]:
+    """
+    CSV 파일에서 마이그레이션 체크리스트 읽기
+    """
+    logger.info(f"Reading CSV migration checklist from: {file_path}")
+
+    try:
+        items = []
+        with open(file_path, 'r', encoding='utf-8-sig') as csvfile:
+            reader = csv.DictReader(csvfile)
+
+            for row_idx, row in enumerate(reader, start=2):  # start=2 (헤더가 1)
+                resource_type = row.get('리소스 타입', '').strip()
+                resource_name = row.get('리소스 이름', '').strip()
+
+                # Skip if resource type or name is empty
+                if not resource_type or not resource_name:
+                    continue
+
+                item = {
+                    'row_number': row_idx,
+                    'resource_type': resource_type,
+                    'resource_name': resource_name,
+                    'source_account': row.get('소스 계정', '').strip(),
+                    'dest_account': row.get('대상 계정', '').strip(),
+                    'current_status': row.get('마이그레이션 상태', '').strip(),
+                }
+                items.append(item)
+
+        logger.info(f"Read {len(items)} items from CSV checklist")
+        return items
+
+    except FileNotFoundError:
+        logger.error(f"File not found: {file_path}")
+        return []
+    except Exception as e:
+        logger.error(f"Error reading CSV file: {e}")
+        return []
+
+
+def write_csv_results(file_path: str, results: List[Dict]):
+    """
+    검증 결과를 CSV 파일로 저장
+    """
+    logger.info(f"Writing verification results to CSV: {file_path}")
+
+    try:
+        # 원본 파일에서 모든 데이터 읽기
+        original_data = []
+        input_file = EXCEL_FILE_PATH
+
+        try:
+            with open(input_file, 'r', encoding='utf-8-sig') as csvfile:
+                reader = csv.DictReader(csvfile)
+                fieldnames = reader.fieldnames
+                for row in reader:
+                    original_data.append(row)
+        except:
+            # 원본 파일이 없으면 기본 헤더 사용
+            fieldnames = ['리소스 타입', '리소스 이름', '소스 계정', '대상 계정',
+                         '마이그레이션 상태', '검증 일시', '비고']
+
+        verification_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # 결과를 row_number에 맞춰 업데이트
+        result_dict = {r['row_number']: r for r in results}
+
+        # CSV 파일 작성
+        with open(file_path, 'w', newline='', encoding='utf-8-sig') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+
+            for idx, row in enumerate(original_data, start=2):  # start=2 (헤더가 1)
+                if idx in result_dict:
+                    result = result_dict[idx]
+                    # 상태에 이모지 추가
+                    status_icon = '✅' if result['exists'] else '❌'
+                    row['마이그레이션 상태'] = f"{status_icon} {result['status']}"
+                    row['검증 일시'] = verification_time
+                    row['비고'] = result['notes']
+
+                writer.writerow(row)
+
+        logger.info(f"Successfully saved CSV verification results to: {file_path}")
+
+    except Exception as e:
+        logger.error(f"Error writing CSV file: {e}")
+
+
+# ===================================================
 # 엑셀 처리 함수
 # ===================================================
 
-def read_migration_checklist(file_path: str) -> List[Dict]:
+def read_excel_checklist(file_path: str) -> List[Dict]:
     """
     엑셀 파일에서 마이그레이션 체크리스트 읽기
     """
-    logger.info(f"Reading migration checklist from: {file_path}")
+    if not OPENPYXL_AVAILABLE:
+        logger.error("openpyxl is required for Excel files. Install it with: pip install openpyxl")
+        return []
+
+    logger.info(f"Reading Excel migration checklist from: {file_path}")
 
     try:
         wb = load_workbook(file_path)
@@ -244,7 +357,7 @@ def read_migration_checklist(file_path: str) -> List[Dict]:
             }
             items.append(item)
 
-        logger.info(f"Read {len(items)} items from checklist")
+        logger.info(f"Read {len(items)} items from Excel checklist")
         return items
 
     except FileNotFoundError:
@@ -255,11 +368,15 @@ def read_migration_checklist(file_path: str) -> List[Dict]:
         return []
 
 
-def write_verification_results(file_path: str, results: List[Dict]):
+def write_excel_results(file_path: str, results: List[Dict]):
     """
     검증 결과를 엑셀 파일로 저장
     """
-    logger.info(f"Writing verification results to: {file_path}")
+    if not OPENPYXL_AVAILABLE:
+        logger.error("openpyxl is required for Excel files. Install it with: pip install openpyxl")
+        return
+
+    logger.info(f"Writing verification results to Excel: {file_path}")
 
     try:
         # 원본 파일을 읽어서 수정
@@ -307,10 +424,39 @@ def write_verification_results(file_path: str, results: List[Dict]):
 
         # 파일 저장
         wb.save(file_path)
-        logger.info(f"Successfully saved verification results to: {file_path}")
+        logger.info(f"Successfully saved Excel verification results to: {file_path}")
 
     except Exception as e:
         logger.error(f"Error writing Excel file: {e}")
+
+
+# ===================================================
+# 통합 처리 함수 (CSV 또는 Excel 자동 감지)
+# ===================================================
+
+def read_migration_checklist(file_path: str) -> List[Dict]:
+    """
+    파일 확장자에 따라 CSV 또는 Excel 파일에서 마이그레이션 체크리스트 읽기
+    """
+    if is_csv_file(file_path):
+        return read_csv_checklist(file_path)
+    elif is_excel_file(file_path):
+        return read_excel_checklist(file_path)
+    else:
+        logger.error(f"Unsupported file format: {file_path}. Please use .csv, .xlsx, or .xls")
+        return []
+
+
+def write_verification_results(file_path: str, results: List[Dict]):
+    """
+    파일 확장자에 따라 CSV 또는 Excel 파일로 검증 결과 저장
+    """
+    if is_csv_file(file_path):
+        write_csv_results(file_path, results)
+    elif is_excel_file(file_path):
+        write_excel_results(file_path, results)
+    else:
+        logger.error(f"Unsupported file format: {file_path}. Please use .csv, .xlsx, or .xls")
 
 
 def print_summary(results: List[Dict]):
@@ -373,9 +519,18 @@ def main():
     logger.info(f"리전: {REGION}")
     logger.info(f"입력 파일: {EXCEL_FILE_PATH}")
     logger.info(f"출력 파일: {OUTPUT_FILE_PATH}")
+
+    # 파일 형식 감지
+    if is_csv_file(EXCEL_FILE_PATH):
+        logger.info(f"파일 형식: CSV")
+    elif is_excel_file(EXCEL_FILE_PATH):
+        logger.info(f"파일 형식: Excel")
+    else:
+        logger.info(f"파일 형식: 알 수 없음")
+
     logger.info("=" * 80)
 
-    # 1. 엑셀에서 체크리스트 읽기
+    # 1. 파일에서 체크리스트 읽기 (CSV 또는 Excel 자동 감지)
     items = read_migration_checklist(EXCEL_FILE_PATH)
     if not items:
         logger.error("체크리스트가 비어있습니다. 종료합니다.")
@@ -426,7 +581,7 @@ def main():
 
     logger.info("-" * 80)
 
-    # 3. 결과를 엑셀 파일로 저장
+    # 3. 결과를 파일로 저장 (CSV 또는 Excel 자동 감지)
     write_verification_results(OUTPUT_FILE_PATH, results)
 
     # 4. 요약 출력
