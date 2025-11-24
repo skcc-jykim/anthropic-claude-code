@@ -295,6 +295,8 @@ python3 verify_migration_from_excel.py
 | **`LAMBDA_FUNCTIONS`** | **쉼표로 구분된 Lambda 함수 이름 목록** | `` |
 | **`LAMBDA_FUNCTIONS_FILE`** | **Lambda 함수 목록 파일 경로** | `` |
 | **`LAMBDA_EXCLUDE_PATTERN`** | **제외할 Lambda 함수 패턴 (쉼표 구분)** | `` |
+| **`SKIP_MISSING_LAYERS`** | **매핑되지 않은 Layer 제외 여부** | `true` |
+| **`FAIL_ON_MISSING_LAYERS`** | **Layer 매핑 실패 시 마이그레이션 중단 여부** | `false` |
 | `DEFAULT_DEST_LAMBDA_ROLE` | Lambda 기본 실행 Role ARN | (필수) |
 | `DEFAULT_DEST_SFN_ROLE` | Step Functions 기본 실행 Role ARN | (필수) |
 | `EVENTBRIDGE_RULES_ROLE_ARN` | EventBridge Rules 실행 Role ARN | (자동 생성) |
@@ -378,6 +380,20 @@ ROLE_MAP = {
 1. **Container 이미지 Lambda**: ECR 이미지는 별도 마이그레이션 필요
 2. **EventBridge 커스텀 버스**: 현재는 default 버스만 지원
 3. **Step Functions 로깅/추적**: 권한 문제로 비활성화됨
+4. **Lambda Layer 마이그레이션**:
+   - Layer 마이그레이션 실패 시 기본적으로 Layer 없이 Lambda 함수 생성 (`SKIP_MISSING_LAYERS=true`)
+   - Layer가 필수인 경우 `FAIL_ON_MISSING_LAYERS=true`로 설정
+   - 크로스 계정 Layer 접근이 필요한 경우 두 옵션 모두 `false`로 설정하고 소스 계정에서 권한 부여 필요:
+     ```bash
+     # 소스 계정에서 실행
+     aws lambda add-layer-version-permission \
+       --layer-name <LAYER_NAME> \
+       --version-number <VERSION> \
+       --statement-id xaccount \
+       --action lambda:GetLayerVersion \
+       --principal <DEST_ACCOUNT_ID> \
+       --profile src
+     ```
 
 ### migrate_api_gateway.py
 1. **Lambda 권한 추가**: API Gateway가 Lambda를 호출하려면 추가 권한 필요

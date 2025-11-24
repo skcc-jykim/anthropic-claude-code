@@ -42,6 +42,22 @@ export NAME_PREFIX=""
 # - 세 가지 방법을 모두 사용할 수 있습니다
 
 # ===================================================
+# Lambda Layer 처리 설정 (선택적)
+# ===================================================
+
+# Layer 마이그레이션 실패 시 동작 설정
+# SKIP_MISSING_LAYERS: 매핑되지 않은 Layer를 제외하고 Lambda 함수 생성 (기본값: true)
+export SKIP_MISSING_LAYERS="true"
+
+# FAIL_ON_MISSING_LAYERS: Layer 매핑 실패 시 Lambda 마이그레이션 중단 (기본값: false)
+# export FAIL_ON_MISSING_LAYERS="false"
+
+# 참고:
+# - Layer 마이그레이션이 실패해도 Lambda 함수는 Layer 없이 생성됩니다 (SKIP_MISSING_LAYERS=true)
+# - Layer가 필수인 경우 FAIL_ON_MISSING_LAYERS=true로 설정하여 에러 발생 시 중단
+# - 두 옵션을 모두 false로 설정하면 원본 Layer ARN을 유지 (크로스 계정 접근 필요)
+
+# ===================================================
 # IAM Role 설정
 # ===================================================
 
@@ -77,6 +93,10 @@ elif [ -n "$LAMBDA_FUNCTIONS_FILE" ]; then
 fi
 if [ -n "$LAMBDA_EXCLUDE_PATTERN" ]; then
     echo "Lambda 제외 패턴: $LAMBDA_EXCLUDE_PATTERN"
+fi
+echo "Layer 처리: SKIP_MISSING_LAYERS=${SKIP_MISSING_LAYERS:-true}"
+if [ "$FAIL_ON_MISSING_LAYERS" = "true" ]; then
+    echo "            FAIL_ON_MISSING_LAYERS=true (Layer 매핑 실패 시 중단)"
 fi
 echo "=========================================="
 echo ""
