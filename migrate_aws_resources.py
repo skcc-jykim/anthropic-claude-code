@@ -8,6 +8,7 @@ import requests
 import boto3
 import logging
 import time
+import subprocess
 from botocore.exceptions import ClientError
 from typing import Optional, Dict, List, Tuple
 
@@ -83,6 +84,7 @@ LAYER_MAP: Dict[str, str] = {}
 LAMBDA_ARN_MAP: Dict[str, str] = {}  # 소스 ARN -> 대상 ARN
 SFN_ARN_MAP: Dict[str, str] = {}  # 소스 ARN -> 대상 ARN
 SCHEDULE_GROUP_ARN_MAP: Dict[str, str] = {}  # 소스 ARN -> 대상 ARN
+ECR_IMAGE_MAP: Dict[str, str] = {}  # 소스 이미지 URI -> 대상 이미지 URI
 
 # 재시도 설정
 MAX_RETRIES = 3
@@ -571,11 +573,170 @@ def migrate_layers(lambda_src, lambda_dst):
 
 
 # ===================================================
+# ECR 이미지 마이그레이션
+# ===================================================
+def get_ecr_login_command(ecr_client, registry_id: str) -> Tuple[str, str]:
+    """ECR 로그인 토큰 및 엔드포인트 가져오기"""
+    response = ecr_client.get_authorization_token(registryIds=[registry_id])
+    auth_data = response['authorizationData'][0]
+
+    import base64
+    token = base64.b64decode(auth_data['authorizationToken']).decode('utf-8')
+    username, password = token.split(':')
+    endpoint = auth_data['proxyEndpoint']
+
+    return password, endpoint
+
+
+def ensure_ecr_repository(ecr_client, repository_name: str) -> str:
+    """ECR 저장소 확인/생성"""
+    try:
+        response = ecr_client.describe_repositories(repositoryNames=[repository_name])
+        repo_uri = response['repositories'][0]['repositoryUri']
+        logger.info(f"  ✔ ECR 저장소 존재: {repo_uri}")
+        return repo_uri
+    except ClientError as e:
+        if e.response['Error']['Code'] == 'RepositoryNotFoundException':
+            logger.info(f"  ECR 저장소 생성 중: {repository_name}")
+            response = ecr_client.create_repository(
+                repositoryName=repository_name,
+                imageScanningConfiguration={'scanOnPush': True},
+                encryptionConfiguration={'encryptionType': 'AES256'}
+            )
+            repo_uri = response['repository']['repositoryUri']
+            logger.info(f"  ✔ ECR 저장소 생성 완료: {repo_uri}")
+            return repo_uri
+        else:
+            raise
+
+
+@retry_on_throttle
+def migrate_ecr_image(
+    src_image_uri: str,
+    src_ecr_client,
+    dst_ecr_client,
+    src_account: str,
+    dst_account: str,
+    region: str
+) -> str:
+    """
+    ECR 이미지를 소스 계정에서 대상 계정으로 마이그레이션
+
+    Args:
+        src_image_uri: 소스 이미지 URI (예: 123456789012.dkr.ecr.region.amazonaws.com/repo:tag)
+        src_ecr_client: 소스 계정 ECR 클라이언트
+        dst_ecr_client: 대상 계정 ECR 클라이언트
+        src_account: 소스 계정 ID
+        dst_account: 대상 계정 ID
+        region: AWS 리전
+
+    Returns:
+        대상 이미지 URI
+    """
+    # 이미 마이그레이션된 경우 캐시된 URI 반환
+    if src_image_uri in ECR_IMAGE_MAP:
+        logger.info(f"  이미 마이그레이션된 이미지 사용: {ECR_IMAGE_MAP[src_image_uri]}")
+        return ECR_IMAGE_MAP[src_image_uri]
+
+    logger.info(f"  ECR 이미지 마이그레이션 시작: {src_image_uri}")
+
+    try:
+        # 이미지 URI 파싱
+        # 형식: account.dkr.ecr.region.amazonaws.com/repository:tag
+        # 또는: account.dkr.ecr.region.amazonaws.com/repository@digest
+        parts = src_image_uri.split('/')
+        if len(parts) < 2:
+            raise ValueError(f"유효하지 않은 이미지 URI 형식: {src_image_uri}")
+
+        # 저장소 이름과 태그/다이제스트 추출
+        repo_and_tag = parts[1]
+        if ':' in repo_and_tag:
+            repository_name, tag = repo_and_tag.rsplit(':', 1)
+        elif '@' in repo_and_tag:
+            repository_name, digest = repo_and_tag.rsplit('@', 1)
+            tag = 'latest'  # 다이제스트만 있는 경우 latest 태그 사용
+        else:
+            repository_name = repo_and_tag
+            tag = 'latest'
+
+        logger.info(f"    저장소: {repository_name}, 태그: {tag}")
+
+        # 대상 계정에 ECR 저장소 생성/확인
+        dst_repo_uri = ensure_ecr_repository(dst_ecr_client, repository_name)
+        dst_image_uri = f"{dst_repo_uri}:{tag}"
+
+        # ECR 로그인 정보 가져오기
+        logger.info(f"    ECR 로그인 중...")
+        src_password, src_endpoint = get_ecr_login_command(src_ecr_client, src_account)
+        dst_password, dst_endpoint = get_ecr_login_command(dst_ecr_client, dst_account)
+
+        # Docker 로그인 (소스)
+        logger.info(f"    소스 ECR 로그인: {src_endpoint}")
+        subprocess.run(
+            ['docker', 'login', '--username', 'AWS', '--password-stdin', src_endpoint],
+            input=src_password.encode(),
+            check=True,
+            capture_output=True
+        )
+
+        # Docker 로그인 (대상)
+        logger.info(f"    대상 ECR 로그인: {dst_endpoint}")
+        subprocess.run(
+            ['docker', 'login', '--username', 'AWS', '--password-stdin', dst_endpoint],
+            input=dst_password.encode(),
+            check=True,
+            capture_output=True
+        )
+
+        # 이미지 Pull
+        logger.info(f"    이미지 Pull 중: {src_image_uri}")
+        subprocess.run(['docker', 'pull', src_image_uri], check=True, capture_output=True)
+
+        # 이미지 태그
+        logger.info(f"    이미지 태그 중: {dst_image_uri}")
+        subprocess.run(['docker', 'tag', src_image_uri, dst_image_uri], check=True, capture_output=True)
+
+        # 이미지 Push
+        logger.info(f"    이미지 Push 중: {dst_image_uri}")
+        subprocess.run(['docker', 'push', dst_image_uri], check=True, capture_output=True)
+
+        # 로컬 이미지 정리 (선택적)
+        try:
+            subprocess.run(['docker', 'rmi', src_image_uri], check=True, capture_output=True)
+            subprocess.run(['docker', 'rmi', dst_image_uri], check=True, capture_output=True)
+            logger.info(f"    로컬 이미지 정리 완료")
+        except subprocess.CalledProcessError:
+            logger.warning(f"    로컬 이미지 정리 실패 (무시)")
+
+        # 매핑 저장
+        ECR_IMAGE_MAP[src_image_uri] = dst_image_uri
+        logger.info(f"  ✔ ECR 이미지 마이그레이션 완료: {src_image_uri} -> {dst_image_uri}")
+
+        return dst_image_uri
+
+    except subprocess.CalledProcessError as e:
+        error_msg = e.stderr.decode() if e.stderr else str(e)
+        logger.error(f"  ❌ Docker 명령 실패: {error_msg}")
+        raise Exception(f"ECR 이미지 마이그레이션 실패: {error_msg}")
+    except Exception as e:
+        logger.error(f"  ❌ ECR 이미지 마이그레이션 실패: {e}")
+        raise
+
+
+# ===================================================
 # Lambda 마이그레이션 본체
 # ===================================================
 @retry_on_throttle
-def migrate_lambdas(lambda_src, lambda_dst, src_account: str, dst_account: str):
-    """Lambda 함수 마이그레이션 (태그, 동시성, DLQ 포함)"""
+def migrate_lambdas(
+    lambda_src,
+    lambda_dst,
+    src_account: str,
+    dst_account: str,
+    src_ecr_client=None,
+    dst_ecr_client=None,
+    region: str = REGION
+):
+    """Lambda 함수 마이그레이션 (태그, 동시성, DLQ, 컨테이너 이미지 포함)"""
 
     logger.info("\n" + "="*50)
     logger.info("🚀 Lambda 함수 마이그레이션 시작")
@@ -608,36 +769,92 @@ def migrate_lambdas(lambda_src, lambda_dst, src_account: str, dst_account: str):
             try:
                 cfg = lambda_src.get_function_configuration(FunctionName=name)
                 code_info = lambda_src.get_function(FunctionName=name)["Code"]
+                package_type = cfg.get("PackageType", "Zip")
 
-                if cfg.get("PackageType") == "Image":
-                    logger.warning(f"[SKIP] {name} (Container 이미지 Lambda는 지원 안함)")
-                    continue
+                # 컨테이너 이미지 Lambda 처리
+                if package_type == "Image":
+                    logger.info(f"  📦 컨테이너 이미지 Lambda 감지")
 
-                # Lambda 코드 ZIP
-                zip_url = code_info["Location"]
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    zip_path = os.path.join(tmpdir, f"{name}.zip")
-                    download_code(zip_url, zip_path)
-                    with open(zip_path, "rb") as f:
-                        zip_bytes = f.read()
+                    # ECR 클라이언트가 없으면 경고 후 스킵
+                    if not src_ecr_client or not dst_ecr_client:
+                        logger.warning(f"  [SKIP] ECR 클라이언트가 제공되지 않음 (컨테이너 이미지 Lambda 마이그레이션 불가)")
+                        skipped_count += 1
+                        continue
 
-                # 공통 설정 파라미터
-                common_params = {
-                    "FunctionName": name,
-                    "Role": map_role(cfg["Role"]),
-                    "Runtime": cfg["Runtime"],
-                    "Handler": cfg["Handler"],
-                    "Timeout": cfg["Timeout"],
-                    "MemorySize": cfg["MemorySize"],
-                    "Description": cfg.get("Description", "")
-                }
+                    # 소스 이미지 URI 가져오기
+                    src_image_uri = code_info.get("ImageUri")
+                    if not src_image_uri:
+                        logger.error(f"  ❌ 이미지 URI를 찾을 수 없음")
+                        skipped_count += 1
+                        continue
+
+                    logger.info(f"  원본 이미지: {src_image_uri}")
+
+                    try:
+                        # ECR 이미지 마이그레이션
+                        dst_image_uri = migrate_ecr_image(
+                            src_image_uri,
+                            src_ecr_client,
+                            dst_ecr_client,
+                            src_account,
+                            dst_account,
+                            region
+                        )
+
+                        # 공통 설정 파라미터 (컨테이너 이미지용)
+                        common_params = {
+                            "FunctionName": name,
+                            "Role": map_role(cfg["Role"]),
+                            "Timeout": cfg["Timeout"],
+                            "MemorySize": cfg["MemorySize"],
+                            "Description": cfg.get("Description", ""),
+                            "PackageType": "Image"
+                        }
+
+                        # 컨테이너 이미지는 ImageConfig 사용
+                        if cfg.get("ImageConfigResponse"):
+                            image_config = cfg["ImageConfigResponse"].get("ImageConfig")
+                            if image_config:
+                                common_params["ImageConfig"] = {}
+                                if image_config.get("EntryPoint"):
+                                    common_params["ImageConfig"]["EntryPoint"] = image_config["EntryPoint"]
+                                if image_config.get("Command"):
+                                    common_params["ImageConfig"]["Command"] = image_config["Command"]
+                                if image_config.get("WorkingDirectory"):
+                                    common_params["ImageConfig"]["WorkingDirectory"] = image_config["WorkingDirectory"]
+
+                    except Exception as e:
+                        logger.error(f"  ❌ ECR 이미지 마이그레이션 실패: {e}")
+                        skipped_count += 1
+                        continue
+
+                # ZIP 기반 Lambda 처리
+                else:
+                    # Lambda 코드 ZIP
+                    zip_url = code_info["Location"]
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        zip_path = os.path.join(tmpdir, f"{name}.zip")
+                        download_code(zip_url, zip_path)
+                        with open(zip_path, "rb") as f:
+                            zip_bytes = f.read()
+
+                    # 공통 설정 파라미터 (ZIP용)
+                    common_params = {
+                        "FunctionName": name,
+                        "Role": map_role(cfg["Role"]),
+                        "Runtime": cfg["Runtime"],
+                        "Handler": cfg["Handler"],
+                        "Timeout": cfg["Timeout"],
+                        "MemorySize": cfg["MemorySize"],
+                        "Description": cfg.get("Description", "")
+                    }
 
                 # Environment
                 if cfg.get("Environment") and cfg["Environment"].get("Variables"):
                     common_params["Environment"] = cfg["Environment"]
 
-                # Layers → 자동 매핑된 LAYER_MAP 사용
-                if cfg.get("Layers"):
+                # Layers → 자동 매핑된 LAYER_MAP 사용 (ZIP 기반 Lambda만)
+                if package_type == "Zip" and cfg.get("Layers"):
                     mapped = []
                     missing_layers = []
 
@@ -731,19 +948,28 @@ def migrate_lambdas(lambda_src, lambda_dst, src_account: str, dst_account: str):
                     lambda_dst.update_function_configuration(**common_params)
                     # Lambda가 업데이트 완료될 때까지 대기
                     time.sleep(2)
-                    # 코드 업데이트
-                    lambda_dst.update_function_code(FunctionName=name, ZipFile=zip_bytes)
-                    logger.info(f"  ✔ 업데이트 완료: {name}")
+
+                    # 코드 업데이트 (패키지 타입에 따라 다르게 처리)
+                    if package_type == "Image":
+                        lambda_dst.update_function_code(FunctionName=name, ImageUri=dst_image_uri)
+                        logger.info(f"  ✔ 컨테이너 이미지 업데이트 완료: {name}")
+                    else:
+                        lambda_dst.update_function_code(FunctionName=name, ZipFile=zip_bytes)
+                        logger.info(f"  ✔ ZIP 코드 업데이트 완료: {name}")
+
                 else:
                     logger.info(f"  새 함수 생성 중...")
                     # 생성 시에만 사용 가능한 파라미터 추가
                     create_params = common_params.copy()
-                    create_params["Code"] = {"ZipFile": zip_bytes}
                     create_params["Architectures"] = cfg.get("Architectures", ["x86_64"])
 
-                    # PackageType (기본값: Zip)
-                    if cfg.get("PackageType"):
-                        create_params["PackageType"] = cfg["PackageType"]
+                    # 패키지 타입에 따라 Code 파라미터 설정
+                    if package_type == "Image":
+                        create_params["Code"] = {"ImageUri": dst_image_uri}
+                        logger.info(f"  컨테이너 이미지로 생성: {dst_image_uri}")
+                    else:
+                        create_params["Code"] = {"ZipFile": zip_bytes}
+                        create_params["PackageType"] = "Zip"
 
                     lambda_dst.create_function(**create_params)
                     logger.info(f"  ✔ 생성 완료: {name}")
@@ -1367,6 +1593,8 @@ def main():
     scheduler_src = src_sess.client("scheduler")
     scheduler_dst = dst_sess.client("scheduler")
     iam_dst = dst_sess.client("iam")
+    ecr_src = src_sess.client("ecr")
+    ecr_dst = dst_sess.client("ecr")
 
     try:
         # 0) EventBridge 실행 Role 생성 (가장 먼저 실행)
@@ -1375,8 +1603,16 @@ def main():
         # 1) Layer 먼저 복제
         migrate_layers(lambda_src, lambda_dst)
 
-        # 2) Lambda 복제
-        migrate_lambdas(lambda_src, lambda_dst, src_account, dst_account)
+        # 2) Lambda 복제 (컨테이너 이미지 지원)
+        migrate_lambdas(
+            lambda_src,
+            lambda_dst,
+            src_account,
+            dst_account,
+            src_ecr_client=ecr_src,
+            dst_ecr_client=ecr_dst,
+            region=REGION
+        )
 
         # 3) Step Functions 복제
         migrate_step_functions(sfn_src, sfn_dst, src_account, dst_account)
@@ -1397,6 +1633,7 @@ def main():
         logger.info(f"   - Rules Role: {EVENTBRIDGE_RULES_ROLE_ARN}")
         logger.info(f"   - Scheduler Role: {EVENTBRIDGE_SCHEDULER_ROLE_ARN}")
         logger.info(f"🔧 Layer: {len(LAYER_MAP)}개")
+        logger.info(f"📦 ECR 이미지: {len(ECR_IMAGE_MAP)}개")
         logger.info(f"🚀 Lambda: {len(LAMBDA_ARN_MAP)}개")
         logger.info(f"⚙️ Step Functions: {len(SFN_ARN_MAP)}개")
         logger.info(f"📅 EventBridge Rules: 복제 완료")
