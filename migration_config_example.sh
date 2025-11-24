@@ -19,6 +19,29 @@ export AWS_REGION="ap-northeast-2"
 export NAME_PREFIX=""
 
 # ===================================================
+# Lambda 선택적 마이그레이션 설정 (선택적)
+# ===================================================
+
+# 방법 1: 쉼표로 구분된 Lambda 함수 이름 목록
+# 예: "function1,function2,function3"
+# export LAMBDA_FUNCTIONS="my-function-1,my-function-2,my-function-3"
+
+# 방법 2: Lambda 함수 목록이 담긴 파일 경로
+# 파일 형식: 한 줄에 하나씩 또는 쉼표로 구분
+# 주석(#으로 시작)과 빈 줄은 무시됩니다
+# export LAMBDA_FUNCTIONS_FILE="lambda_functions.txt"
+
+# 방법 3: 제외할 Lambda 함수 패턴 (쉼표로 구분)
+# 함수 이름에 패턴이 포함되면 제외됩니다
+# 예: "test,dev,backup"
+# export LAMBDA_EXCLUDE_PATTERN="test,dev"
+
+# 참고:
+# - LAMBDA_FUNCTIONS_FILE이 설정되면 LAMBDA_FUNCTIONS는 무시됩니다
+# - NAME_PREFIX와 함께 사용 가능 (AND 조건)
+# - 세 가지 방법을 모두 사용할 수 있습니다
+
+# ===================================================
 # IAM Role 설정
 # ===================================================
 
@@ -47,6 +70,14 @@ echo "소스 프로파일: $SRC_PROFILE"
 echo "대상 프로파일: $DST_PROFILE"
 echo "리전: $AWS_REGION"
 echo "이름 필터: ${NAME_PREFIX:-'(전체)'}"
+if [ -n "$LAMBDA_FUNCTIONS" ]; then
+    echo "Lambda 필터 (목록): $LAMBDA_FUNCTIONS"
+elif [ -n "$LAMBDA_FUNCTIONS_FILE" ]; then
+    echo "Lambda 필터 (파일): $LAMBDA_FUNCTIONS_FILE"
+fi
+if [ -n "$LAMBDA_EXCLUDE_PATTERN" ]; then
+    echo "Lambda 제외 패턴: $LAMBDA_EXCLUDE_PATTERN"
+fi
 echo "=========================================="
 echo ""
 echo "계속하려면 Enter를 누르세요 (취소: Ctrl+C)"

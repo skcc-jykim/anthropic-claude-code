@@ -82,6 +82,76 @@ export EVENTBRIDGE_SCHEDULER_ROLE_ARN="arn:aws:iam::TARGET_ACCOUNT:role/EventBri
 python3 migrate_aws_resources.py
 ```
 
+### Lambda 선택적 마이그레이션 (신규 기능)
+
+특정 Lambda 함수만 선택적으로 마이그레이션할 수 있는 기능을 제공합니다.
+
+#### 방법 1: 환경 변수로 함수 목록 지정
+
+```bash
+# 쉼표로 구분된 함수 이름 목록 지정
+export LAMBDA_FUNCTIONS="function1,function2,function3"
+
+# 실행
+python3 migrate_aws_resources.py
+```
+
+#### 방법 2: 파일로 함수 목록 지정
+
+```bash
+# 1. Lambda 함수 목록 파일 생성 (lambda_functions.txt)
+cat > lambda_functions.txt << 'EOF'
+# 마이그레이션할 Lambda 함수 목록
+production-api-handler
+production-data-processor
+production-event-handler
+
+# 또는 쉼표로 구분
+# function-4, function-5, function-6
+EOF
+
+# 2. 환경 변수로 파일 경로 지정
+export LAMBDA_FUNCTIONS_FILE="lambda_functions.txt"
+
+# 3. 실행
+python3 migrate_aws_resources.py
+```
+
+**파일 형식 규칙:**
+- 한 줄에 하나의 함수 이름, 또는 쉼표로 구분하여 여러 함수
+- `#`으로 시작하는 줄은 주석으로 처리
+- 빈 줄은 무시됨
+- 예시 파일: `lambda_functions_example.txt` 참고
+
+#### 방법 3: 제외 패턴 지정
+
+```bash
+# 특정 패턴이 포함된 함수를 제외
+export LAMBDA_EXCLUDE_PATTERN="test,dev,backup"
+
+# 실행 (test, dev, backup이 포함된 함수는 제외됨)
+python3 migrate_aws_resources.py
+```
+
+#### 방법 4: 조합 사용
+
+```bash
+# NAME_PREFIX와 LAMBDA_FUNCTIONS를 함께 사용
+export NAME_PREFIX="prod-"  # prod-로 시작하는 함수 중에서
+export LAMBDA_FUNCTIONS="prod-api,prod-worker,prod-scheduler"  # 이 3개만 마이그레이션
+export LAMBDA_EXCLUDE_PATTERN="backup"  # backup이 포함된 함수는 제외
+
+# 실행
+python3 migrate_aws_resources.py
+```
+
+**필터링 우선순위:**
+1. `NAME_PREFIX` - 접두사 필터 (기존 기능)
+2. `LAMBDA_FUNCTIONS` 또는 `LAMBDA_FUNCTIONS_FILE` - 허용 목록
+3. `LAMBDA_EXCLUDE_PATTERN` - 제외 패턴
+
+모든 필터는 AND 조건으로 적용됩니다.
+
 ### API Gateway 마이그레이션
 
 ```bash
@@ -222,6 +292,9 @@ python3 verify_migration_from_excel.py
 | `DST_PROFILE` | 대상 계정 AWS 프로파일 | `dst` |
 | `AWS_REGION` | AWS 리전 | `ap-northeast-2` |
 | `NAME_PREFIX` | 리소스 이름 필터 (접두사) | `` (전체) |
+| **`LAMBDA_FUNCTIONS`** | **쉼표로 구분된 Lambda 함수 이름 목록** | `` |
+| **`LAMBDA_FUNCTIONS_FILE`** | **Lambda 함수 목록 파일 경로** | `` |
+| **`LAMBDA_EXCLUDE_PATTERN`** | **제외할 Lambda 함수 패턴 (쉼표 구분)** | `` |
 | `DEFAULT_DEST_LAMBDA_ROLE` | Lambda 기본 실행 Role ARN | (필수) |
 | `DEFAULT_DEST_SFN_ROLE` | Step Functions 기본 실행 Role ARN | (필수) |
 | `EVENTBRIDGE_RULES_ROLE_ARN` | EventBridge Rules 실행 Role ARN | (자동 생성) |
