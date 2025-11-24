@@ -102,8 +102,14 @@ def check_stepfunction_exists(state_machine_name: str) -> bool:
 
 
 def check_eventbridge_rule_exists(rule_name: str) -> bool:
-    """EventBridge Rule이 존재하는지 확인"""
+    """
+    EventBridge Rule이 존재하는지 확인
+
+    Note: 비활성화(DISABLED) 상태의 규칙도 존재하는 것으로 간주합니다.
+    이관 완료 여부는 규칙의 존재 여부로만 판단하며, 활성화 상태는 고려하지 않습니다.
+    """
     try:
+        # describe_rule은 ENABLED/DISABLED 상태 모두 반환
         events_client_dst.describe_rule(Name=rule_name)
         return True
     except ClientError as e:
@@ -114,8 +120,14 @@ def check_eventbridge_rule_exists(rule_name: str) -> bool:
 
 
 def check_eventbridge_schedule_exists(schedule_name: str, group_name: str = 'default') -> bool:
-    """EventBridge Scheduler가 존재하는지 확인"""
+    """
+    EventBridge Scheduler가 존재하는지 확인
+
+    Note: 비활성화(DISABLED) 상태의 스케줄도 존재하는 것으로 간주합니다.
+    이관 완료 여부는 스케줄의 존재 여부로만 판단하며, 활성화 상태는 고려하지 않습니다.
+    """
     try:
+        # get_schedule은 ENABLED/DISABLED 상태 모두 반환
         scheduler_client_dst.get_schedule(
             Name=schedule_name,
             GroupName=group_name
@@ -269,15 +281,15 @@ def write_csv_results(file_path: str, results: List[Dict]):
 
     try:
         # 원본 파일에서 모든 데이터 읽기
-        original_data = []
+        original_data = {}
         input_file = EXCEL_FILE_PATH
 
         try:
             with open(input_file, 'r', encoding='utf-8-sig') as csvfile:
                 reader = csv.DictReader(csvfile)
                 fieldnames = reader.fieldnames
-                for row in reader:
-                    original_data.append(row)
+                for idx, row in enumerate(reader, start=2):
+                    original_data[idx] = row
         except:
             # 원본 파일이 없으면 기본 헤더 사용
             fieldnames = ['리소스 타입', '리소스 이름', '소스 계정', '대상 계정',
@@ -285,22 +297,37 @@ def write_csv_results(file_path: str, results: List[Dict]):
 
         verification_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # 결과를 row_number에 맞춰 업데이트
-        result_dict = {r['row_number']: r for r in results}
-
         # CSV 파일 작성
         with open(file_path, 'w', newline='', encoding='utf-8-sig') as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
 
-            for idx, row in enumerate(original_data, start=2):  # start=2 (헤더가 1)
-                if idx in result_dict:
-                    result = result_dict[idx]
-                    # 상태에 이모지 추가
-                    status_icon = '✅' if result['exists'] else '❌'
-                    row['마이그레이션 상태'] = f"{status_icon} {result['status']}"
-                    row['검증 일시'] = verification_time
-                    row['비고'] = result['notes']
+            # 모든 검증 결과를 출력 (원본 데이터 순서 유지)
+            for result in results:
+                row_num = result['row_number']
+
+                # 원본 데이터가 있으면 사용, 없으면 새로 생성
+                if row_num in original_data:
+                    row = original_data[row_num]
+                else:
+                    # 원본에 없는 경우 결과 데이터로 새 행 생성
+                    row = {
+                        '리소스 타입': result['resource_type'],
+                        '리소스 이름': result['resource_name'],
+                        '소스 계정': '',
+                        '대상 계정': '',
+                        '마이그레이션 상태': '',
+                        '검증 일시': '',
+                        '비고': ''
+                    }
+
+                # 검증 결과로 업데이트
+                status_icon = '✅' if result['exists'] else '❌'
+                row['리소스 타입'] = result['resource_type']
+                row['리소스 이름'] = result['resource_name']
+                row['마이그레이션 상태'] = f"{status_icon} {result['status']}"
+                row['검증 일시'] = verification_time
+                row['비고'] = result['notes']
 
                 writer.writerow(row)
 
@@ -405,6 +432,10 @@ def write_excel_results(file_path: str, results: List[Dict]):
 
         for result in results:
             row_num = result['row_number']
+
+            # 리소스 타입과 이름 업데이트 (원본과 동일하게 유지)
+            ws.cell(row=row_num, column=COL_RESOURCE_TYPE + 1, value=result['resource_type'])
+            ws.cell(row=row_num, column=COL_RESOURCE_NAME + 1, value=result['resource_name'])
 
             # 상태 업데이트
             status_cell = ws.cell(row=row_num, column=COL_STATUS + 1)
