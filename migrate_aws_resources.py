@@ -28,6 +28,11 @@ DST_PROFILE = os.getenv("DST_PROFILE", "dst")
 REGION = os.getenv("AWS_REGION", "ap-northeast-2")
 NAME_PREFIX = os.getenv("NAME_PREFIX", "")
 
+# Lambda 선택적 마이그레이션 설정
+LAMBDA_FUNCTIONS = os.getenv("LAMBDA_FUNCTIONS", "")  # 쉼표로 구분된 함수 이름 목록
+LAMBDA_FUNCTIONS_FILE = os.getenv("LAMBDA_FUNCTIONS_FILE", "")  # 함수 목록 파일 경로
+LAMBDA_EXCLUDE_PATTERN = os.getenv("LAMBDA_EXCLUDE_PATTERN", "")  # 제외할 패턴 (쉼표 구분)
+
 # 매핑에 없으면 이 Role 적용
 DEFAULT_DEST_LAMBDA_ROLE = os.getenv(
     "DEFAULT_DEST_LAMBDA_ROLE",
@@ -102,6 +107,64 @@ def retry_on_throttle(func):
                 else:
                     raise
     return wrapper
+
+
+def load_lambda_function_list() -> Optional[set]:
+    """Lambda 함수 목록 로드 (파일 또는 환경 변수에서)"""
+    lambda_functions = set()
+
+    # 1. 파일에서 로드
+    if LAMBDA_FUNCTIONS_FILE:
+        try:
+            with open(LAMBDA_FUNCTIONS_FILE, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    # 빈 줄이나 주석(#으로 시작) 무시
+                    if line and not line.startswith('#'):
+                        # CSV 형식 지원 (쉼표로 구분)
+                        functions = [fn.strip() for fn in line.split(',')]
+                        lambda_functions.update(fn for fn in functions if fn)
+            logger.info(f"📋 파일에서 {len(lambda_functions)}개의 Lambda 함수 목록 로드: {LAMBDA_FUNCTIONS_FILE}")
+            return lambda_functions
+        except FileNotFoundError:
+            logger.error(f"❌ Lambda 함수 목록 파일을 찾을 수 없습니다: {LAMBDA_FUNCTIONS_FILE}")
+            return None
+        except Exception as e:
+            logger.error(f"❌ Lambda 함수 목록 파일 읽기 실패: {e}")
+            return None
+
+    # 2. 환경 변수에서 로드
+    if LAMBDA_FUNCTIONS:
+        functions = [fn.strip() for fn in LAMBDA_FUNCTIONS.split(',')]
+        lambda_functions = set(fn for fn in functions if fn)
+        logger.info(f"📋 환경 변수에서 {len(lambda_functions)}개의 Lambda 함수 목록 로드")
+        return lambda_functions
+
+    # 둘 다 설정되지 않은 경우
+    return None
+
+
+def should_migrate_lambda(function_name: str, allowed_functions: Optional[set] = None) -> bool:
+    """Lambda 함수를 마이그레이션해야 하는지 판단"""
+
+    # 1. NAME_PREFIX 필터 (기존 기능 유지)
+    if NAME_PREFIX and not function_name.startswith(NAME_PREFIX):
+        return False
+
+    # 2. 허용 목록 필터 (LAMBDA_FUNCTIONS 또는 LAMBDA_FUNCTIONS_FILE)
+    if allowed_functions is not None:
+        if function_name not in allowed_functions:
+            return False
+
+    # 3. 제외 패턴 필터
+    if LAMBDA_EXCLUDE_PATTERN:
+        exclude_patterns = [p.strip() for p in LAMBDA_EXCLUDE_PATTERN.split(',')]
+        for pattern in exclude_patterns:
+            if pattern and pattern in function_name:
+                logger.info(f"⏭️  제외 패턴 '{pattern}' 매칭으로 스킵: {function_name}")
+                return False
+
+    return True
 
 
 def download_code(code_url: str, dest_path: str):
@@ -472,13 +535,24 @@ def migrate_lambdas(lambda_src, lambda_dst, src_account: str, dst_account: str):
     logger.info("🚀 Lambda 함수 마이그레이션 시작")
     logger.info("="*50)
 
+    # Lambda 함수 선택적 필터링 설정 로드
+    allowed_functions = load_lambda_function_list()
+    if allowed_functions is not None:
+        logger.info(f"✅ 선택적 마이그레이션 모드: {len(allowed_functions)}개의 Lambda 함수만 이관합니다")
+        logger.info(f"📝 대상 함수: {', '.join(sorted(allowed_functions))}")
+
     paginator = lambda_src.get_paginator("list_functions")
+
+    migrated_count = 0
+    skipped_count = 0
 
     for page in paginator.paginate():
         for fn in page["Functions"]:
             name = fn["FunctionName"]
 
-            if NAME_PREFIX and not name.startswith(NAME_PREFIX):
+            # 선택적 필터링 로직 적용
+            if not should_migrate_lambda(name, allowed_functions):
+                skipped_count += 1
                 continue
 
             logger.info(f"\n{'='*50}")
@@ -623,11 +697,20 @@ def migrate_lambdas(lambda_src, lambda_dst, src_account: str, dst_account: str):
                 except ClientError as e:
                     logger.warning(f"  [WARN] 동시성 설정 실패: {e}")
 
+                migrated_count += 1
+
             except Exception as e:
                 logger.error(f"  ❌ 오류 발생: {name} - {e}")
                 continue
 
-    logger.info(f"\n🚀 Lambda 마이그레이션 완료! (총 {len(LAMBDA_ARN_MAP)}개)")
+    # 마이그레이션 완료 통계
+    logger.info(f"\n{'='*50}")
+    logger.info(f"🚀 Lambda 마이그레이션 완료!")
+    logger.info(f"{'='*50}")
+    logger.info(f"  ✅ 성공: {migrated_count}개")
+    logger.info(f"  ⏭️  스킵: {skipped_count}개")
+    logger.info(f"  📊 총 처리: {migrated_count + skipped_count}개")
+    logger.info(f"{'='*50}\n")
 
 
 # ===================================================
