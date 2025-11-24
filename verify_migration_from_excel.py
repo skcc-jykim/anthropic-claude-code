@@ -22,8 +22,9 @@ except ImportError:
 # ===================================================
 # 로깅 설정
 # ===================================================
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -127,16 +128,21 @@ def check_eventbridge_schedule_exists(schedule_name: str, group_name: str = 'def
     이관 완료 여부는 스케줄의 존재 여부로만 판단하며, 활성화 상태는 고려하지 않습니다.
     """
     try:
+        logger.debug(f"Checking EventBridge Schedule - Name: '{schedule_name}', GroupName: '{group_name}'")
         # get_schedule은 ENABLED/DISABLED 상태 모두 반환
-        scheduler_client_dst.get_schedule(
+        response = scheduler_client_dst.get_schedule(
             Name=schedule_name,
             GroupName=group_name
         )
+        state = response.get('State', 'UNKNOWN')
+        logger.debug(f"EventBridge Schedule found - Name: '{schedule_name}', State: {state}")
         return True
     except ClientError as e:
-        if e.response['Error']['Code'] == 'ResourceNotFoundException':
+        error_code = e.response['Error']['Code']
+        if error_code == 'ResourceNotFoundException':
+            logger.debug(f"EventBridge Schedule not found - Name: '{schedule_name}', GroupName: '{group_name}'")
             return False
-        logger.error(f"Error checking EventBridge Schedule {schedule_name}: {e}")
+        logger.error(f"Error checking EventBridge Schedule {schedule_name} in group {group_name}: [{error_code}] {e}")
         return False
 
 
@@ -196,8 +202,16 @@ def verify_resource(resource_type: str, resource_name: str) -> tuple[bool, str]:
             else:
                 group_name = 'default'
                 schedule_name = resource_name
+
+            logger.debug(f"EventBridgeSchedule verification - Input: '{resource_name}' -> Group: '{group_name}', Schedule: '{schedule_name}'")
             exists = check_eventbridge_schedule_exists(schedule_name, group_name)
-            return exists, "존재함" if exists else "미존재"
+
+            if not exists:
+                note = f"미존재 (그룹: {group_name}, 스케줄: {schedule_name})"
+            else:
+                note = "존재함"
+
+            return exists, note
 
         elif resource_type == 'APIGateway':
             exists = check_apigateway_exists(resource_name)
