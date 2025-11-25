@@ -205,6 +205,10 @@ export DST_PROFILE=dst
 export AWS_REGION=ap-northeast-2
 export NAME_PREFIX=""  # 특정 접두사로 시작하는 리포지토리만 마이그레이션
 export MAX_IMAGES_PER_REPO=10  # 리포지토리당 최대 이미지 수 (기본값: 10)
+export ECR_IMAGE_TIMEOUT=1800  # 이미지 Pull/Push 타임아웃 초 (기본값: 1800 = 30분)
+
+# 큰 이미지의 경우 타임아웃 증가
+export ECR_IMAGE_TIMEOUT=3600  # 1시간
 
 # 실행
 python3 migrate_ecr.py
@@ -349,6 +353,7 @@ python3 verify_migration_from_excel.py
 | **`ECR_REPOSITORIES`** | **쉼표로 구분된 ECR 리포지토리 이름 목록** | `` |
 | **`ECR_REPOSITORIES_FILE`** | **ECR 리포지토리 목록 파일 경로** | `` |
 | **`MAX_IMAGES_PER_REPO`** | **리포지토리당 최대 이미지 수** | `10` |
+| **`ECR_IMAGE_TIMEOUT`** | **이미지 Pull/Push 타임아웃 (초)** | `1800` (30분) |
 | `DEFAULT_DEST_LAMBDA_ROLE` | Lambda 기본 실행 Role ARN | (필수) |
 | `DEFAULT_DEST_SFN_ROLE` | Step Functions 기본 실행 Role ARN | (필수) |
 | `EVENTBRIDGE_RULES_ROLE_ARN` | EventBridge Rules 실행 Role ARN | (자동 생성) |
@@ -456,7 +461,10 @@ ROLE_MAP = {
 1. **Docker 필수**: 실행 환경에 Docker가 설치되어 있어야 하며 Docker daemon이 실행 중이어야 함
 2. **디스크 공간**: 이미지 Pull/Push를 위한 충분한 디스크 공간 필요
 3. **네트워크**: ECR에 접근 가능한 네트워크 연결 필요
-4. **타임아웃**: 큰 이미지는 Pull/Push에 시간이 오래 걸릴 수 있음 (기본 타임아웃: 10분)
+4. **타임아웃**:
+   - 기본 타임아웃: 30분 (1800초)
+   - 큰 이미지의 경우 `ECR_IMAGE_TIMEOUT` 환경 변수로 조정 가능
+   - 예: `export ECR_IMAGE_TIMEOUT=3600` (1시간)
 5. **이미지 수 제한**: `MAX_IMAGES_PER_REPO`로 리포지토리당 마이그레이션할 이미지 수 제한 가능
 6. **권한**:
    - 소스 계정: ECR 읽기 권한

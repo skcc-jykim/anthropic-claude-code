@@ -23,6 +23,7 @@ ECR (Elastic Container Registry) 리포지토리 및 이미지 마이그레이�
     ECR_REPOSITORIES: 마이그레이션할 리포지토리 목록 (쉼표 구분)
     ECR_REPOSITORIES_FILE: 리포지토리 목록 파일 경로
     MAX_IMAGES_PER_REPO: 리포지토리당 최대 이미지 수 (기본값: 10)
+    ECR_IMAGE_TIMEOUT: 이미지 Pull/Push 타임아웃 초 (기본값: 1800 = 30분)
 """
 
 import os
@@ -56,6 +57,7 @@ NAME_PREFIX = os.getenv("NAME_PREFIX", "")
 ECR_REPOSITORIES = os.getenv("ECR_REPOSITORIES", "")  # 쉼표로 구분된 리포지토리 이름
 ECR_REPOSITORIES_FILE = os.getenv("ECR_REPOSITORIES_FILE", "")  # 리포지토리 목록 파일
 MAX_IMAGES_PER_REPO = int(os.getenv("MAX_IMAGES_PER_REPO", "10"))  # 리포지토리당 최대 이미지 수
+ECR_IMAGE_TIMEOUT = int(os.getenv("ECR_IMAGE_TIMEOUT", "1800"))  # 이미지 Pull/Push 타임아웃 (초, 기본값: 30분)
 
 # 재시도 설정
 MAX_RETRIES = 3
@@ -299,12 +301,12 @@ def migrate_image(
     """Docker를 사용하여 이미지 마이그레이션"""
     try:
         # 이미지 Pull
-        logger.info(f"    Pull: {src_image_uri}")
+        logger.info(f"    Pull: {src_image_uri} (타임아웃: {ECR_IMAGE_TIMEOUT}초)")
         result = subprocess.run(
             ['docker', 'pull', src_image_uri],
             capture_output=True,
             check=True,
-            timeout=600  # 10분 타임아웃
+            timeout=ECR_IMAGE_TIMEOUT
         )
 
         # 이미지 태그
@@ -316,12 +318,12 @@ def migrate_image(
         )
 
         # 이미지 Push
-        logger.info(f"    Push: {dst_image_uri}")
+        logger.info(f"    Push: {dst_image_uri} (타임아웃: {ECR_IMAGE_TIMEOUT}초)")
         subprocess.run(
             ['docker', 'push', dst_image_uri],
             capture_output=True,
             check=True,
-            timeout=600  # 10분 타임아웃
+            timeout=ECR_IMAGE_TIMEOUT
         )
 
         # 로컬 이미지 정리
@@ -424,6 +426,7 @@ def main():
     logger.info(f"리전: {REGION}")
     logger.info(f"이름 접두사 필터: {NAME_PREFIX if NAME_PREFIX else '(전체)'}")
     logger.info(f"리포지토리당 최대 이미지: {MAX_IMAGES_PER_REPO}개")
+    logger.info(f"이미지 Pull/Push 타임아웃: {ECR_IMAGE_TIMEOUT}초 ({ECR_IMAGE_TIMEOUT // 60}분)")
     logger.info("="*70)
 
     # Docker 설치 확인
