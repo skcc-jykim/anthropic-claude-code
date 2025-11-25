@@ -644,19 +644,33 @@ def migrate_ecr_image(
         # 이미지 URI 파싱
         # 형식: account.dkr.ecr.region.amazonaws.com/repository:tag
         # 또는: account.dkr.ecr.region.amazonaws.com/repository@digest
-        parts = src_image_uri.split('/')
-        if len(parts) < 2:
+        # 또는: account.dkr.ecr.region.amazonaws.com/namespace/repository:tag
+        if '/' not in src_image_uri:
             raise ValueError(f"유효하지 않은 이미지 URI 형식: {src_image_uri}")
 
+        # 레지스트리 URL과 저장소 경로 분리 (첫 번째 /로만 분리)
+        registry, repo_path = src_image_uri.split('/', 1)
+
         # 저장소 이름과 태그/다이제스트 추출
-        repo_and_tag = parts[1]
-        if ':' in repo_and_tag:
-            repository_name, tag = repo_and_tag.rsplit(':', 1)
-        elif '@' in repo_and_tag:
-            repository_name, digest = repo_and_tag.rsplit('@', 1)
+        # 태그와 다이제스트가 모두 있을 수 있음 (예: repository:tag@digest)
+        if ':' in repo_path and '@' in repo_path:
+            # 둘 다 있는 경우, @ 기준으로 먼저 분리하여 digest 제거
+            repo_and_maybe_tag, digest = repo_path.rsplit('@', 1)
+            if ':' in repo_and_maybe_tag:
+                repository_name, tag = repo_and_maybe_tag.rsplit(':', 1)
+            else:
+                repository_name = repo_and_maybe_tag
+                tag = 'latest'
+        elif ':' in repo_path:
+            # 태그만 있는 경우
+            repository_name, tag = repo_path.rsplit(':', 1)
+        elif '@' in repo_path:
+            # 다이제스트만 있는 경우
+            repository_name, digest = repo_path.rsplit('@', 1)
             tag = 'latest'  # 다이제스트만 있는 경우 latest 태그 사용
         else:
-            repository_name = repo_and_tag
+            # 태그도 다이제스트도 없는 경우
+            repository_name = repo_path
             tag = 'latest'
 
         logger.info(f"    저장소: {repository_name}, 태그: {tag}")
