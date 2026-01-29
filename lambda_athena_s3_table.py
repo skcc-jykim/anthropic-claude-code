@@ -661,9 +661,11 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         }
 
 
-# 로컬 테스트용 CLI
-if __name__ == "__main__":
+def main():
+    """로컬 테스트용 CLI"""
     import argparse
+
+    global AWS_REGION, ATHENA_WORKGROUP, ATHENA_OUTPUT_LOCATION
 
     parser = argparse.ArgumentParser(
         description="S3 Table Bucket 데이터를 Athena로 쿼리합니다.",
@@ -736,9 +738,6 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # 전역 변수 선언 (할당 전에 먼저 선언)
-    global AWS_REGION, ATHENA_WORKGROUP, ATHENA_OUTPUT_LOCATION
-
     # 전역 설정 업데이트
     if args.region:
         AWS_REGION = args.region
@@ -746,6 +745,12 @@ if __name__ == "__main__":
     # 프로파일 설정
     if args.profile:
         set_profile(args.profile)
+
+    # Athena 워크그룹/출력 위치 설정
+    if args.workgroup:
+        ATHENA_WORKGROUP = args.workgroup
+    if args.output_location:
+        ATHENA_OUTPUT_LOCATION = args.output_location
 
     # 이벤트 구성
     event = {
@@ -768,13 +773,11 @@ if __name__ == "__main__":
     if args.timeout:
         event["timeout_seconds"] = args.timeout
 
-    # Athena 워크그룹/출력 위치 설정
-    if args.workgroup:
-        ATHENA_WORKGROUP = args.workgroup
-    if args.output_location:
-        ATHENA_OUTPUT_LOCATION = args.output_location
-
     # 실행
     logger.info(f"이벤트: {json.dumps(event, ensure_ascii=False)}")
     result = lambda_handler(event, None)
     print(json.dumps(result, indent=2, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()
