@@ -11,6 +11,7 @@ Environment Variables:
     - ATHENA_OUTPUT_LOCATION: 쿼리 결과 저장 S3 위치
     - QUERY_TIMEOUT_SECONDS: 쿼리 타임아웃 (기본값: 300)
     - AWS_REGION: AWS 리전 (기본값: ap-northeast-2)
+    - AWS_PROFILE: AWS 프로파일 (로컬 실행 시 사용)
 """
 
 import json
@@ -35,6 +36,10 @@ ATHENA_WORKGROUP = os.getenv("ATHENA_WORKGROUP", "primary")
 ATHENA_OUTPUT_LOCATION = os.getenv("ATHENA_OUTPUT_LOCATION", "")
 QUERY_TIMEOUT_SECONDS = int(os.getenv("QUERY_TIMEOUT_SECONDS", "300"))
 AWS_REGION = os.getenv("AWS_REGION", "ap-northeast-2")
+AWS_PROFILE = os.getenv("AWS_PROFILE", None)
+
+# boto3 세션 (로컬 실행 시 profile 사용)
+_session: Optional[boto3.Session] = None
 
 # Athena 쿼리 상태
 QUERY_STATE_SUCCEEDED = "SUCCEEDED"
@@ -53,9 +58,52 @@ class AthenaQueryTimeout(Exception):
     pass
 
 
-def get_athena_client():
-    """Athena 클라이언트 생성"""
-    return boto3.client("athena", region_name=AWS_REGION)
+def get_session(profile_name: Optional[str] = None) -> boto3.Session:
+    """
+    boto3 세션을 반환합니다.
+
+    Args:
+        profile_name: AWS 프로파일 이름 (로컬 실행 시 사용)
+
+    Returns:
+        boto3 세션
+    """
+    global _session
+
+    profile = profile_name or AWS_PROFILE
+
+    if _session is None:
+        if profile:
+            logger.info(f"AWS 프로파일 사용: {profile}")
+            _session = boto3.Session(profile_name=profile, region_name=AWS_REGION)
+        else:
+            _session = boto3.Session(region_name=AWS_REGION)
+
+    return _session
+
+
+def set_profile(profile_name: str) -> None:
+    """
+    AWS 프로파일을 설정합니다 (로컬 실행 시 사용).
+
+    Args:
+        profile_name: AWS 프로파일 이름
+    """
+    global _session, AWS_PROFILE
+    AWS_PROFILE = profile_name
+    _session = None  # 세션 재생성을 위해 초기화
+    logger.info(f"AWS 프로파일 설정: {profile_name}")
+
+
+def get_athena_client(profile_name: Optional[str] = None):
+    """
+    Athena 클라이언트 생성
+
+    Args:
+        profile_name: AWS 프로파일 이름 (로컬 실행 시 사용)
+    """
+    session = get_session(profile_name)
+    return session.client("athena", region_name=AWS_REGION)
 
 
 def start_query_execution(
@@ -613,19 +661,118 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         }
 
 
-# 로컬 테스트용
+# 로컬 테스트용 CLI
 if __name__ == "__main__":
-    # 테스트 이벤트
-    test_event = {
-        "action": "query",
-        "table_bucket_arn": "arn:aws:s3tables:ap-northeast-2:123456789012:bucket/my-table-bucket",
-        "namespace": "my_namespace",
-        "table_name": "my_table",
-        "columns": ["id", "name", "created_at"],
-        "where_clause": "id > 0",
-        "limit": 10
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="S3 Table Bucket 데이터를 Athena로 쿼리합니다.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+사용 예시:
+  # 네임스페이스 목록 조회
+  python lambda_athena_s3_table.py --profile my-profile \\
+    --action list_namespaces \\
+    --table-bucket-arn arn:aws:s3tables:ap-northeast-2:123456789012:bucket/my-bucket
+
+  # 테이블 목록 조회
+  python lambda_athena_s3_table.py --profile my-profile \\
+    --action list_tables \\
+    --table-bucket-arn arn:aws:s3tables:ap-northeast-2:123456789012:bucket/my-bucket \\
+    --namespace my_namespace
+
+  # 테이블 스키마 조회
+  python lambda_athena_s3_table.py --profile my-profile \\
+    --action describe \\
+    --table-bucket-arn arn:aws:s3tables:ap-northeast-2:123456789012:bucket/my-bucket \\
+    --namespace my_namespace \\
+    --table-name my_table
+
+  # 데이터 쿼리
+  python lambda_athena_s3_table.py --profile my-profile \\
+    --action query \\
+    --table-bucket-arn arn:aws:s3tables:ap-northeast-2:123456789012:bucket/my-bucket \\
+    --namespace my_namespace \\
+    --table-name my_table \\
+    --columns id,name,created_at \\
+    --where "id > 0" \\
+    --limit 10
+
+  # 커스텀 SQL 쿼리
+  python lambda_athena_s3_table.py --profile my-profile \\
+    --table-bucket-arn arn:aws:s3tables:ap-northeast-2:123456789012:bucket/my-bucket \\
+    --namespace my_namespace \\
+    --sql "SELECT COUNT(*) FROM my_namespace.my_table"
+"""
+    )
+
+    # AWS 설정
+    parser.add_argument("--profile", "-p", help="AWS 프로파일 이름")
+    parser.add_argument("--region", "-r", default="ap-northeast-2", help="AWS 리전 (기본값: ap-northeast-2)")
+
+    # 필수 파라미터
+    parser.add_argument("--table-bucket-arn", "-b", required=True, help="S3 Table Bucket ARN")
+
+    # Action 선택
+    parser.add_argument(
+        "--action", "-a",
+        choices=["query", "list_namespaces", "list_tables", "describe"],
+        default="query",
+        help="수행할 작업 (기본값: query)"
+    )
+
+    # 쿼리 파라미터
+    parser.add_argument("--namespace", "-n", help="네임스페이스 (데이터베이스)")
+    parser.add_argument("--table-name", "-t", help="테이블 이름")
+    parser.add_argument("--sql", "-q", help="커스텀 SQL 쿼리")
+    parser.add_argument("--columns", "-c", help="조회할 컬럼 (쉼표 구분)")
+    parser.add_argument("--where", "-w", help="WHERE 조건절")
+    parser.add_argument("--limit", "-l", type=int, help="결과 제한 수")
+
+    # Athena 설정
+    parser.add_argument("--workgroup", default="primary", help="Athena 워크그룹 (기본값: primary)")
+    parser.add_argument("--output-location", "-o", help="쿼리 결과 S3 위치")
+    parser.add_argument("--timeout", type=int, default=300, help="쿼리 타임아웃 초 (기본값: 300)")
+
+    args = parser.parse_args()
+
+    # 전역 설정 업데이트
+    if args.region:
+        AWS_REGION = args.region
+
+    # 프로파일 설정
+    if args.profile:
+        set_profile(args.profile)
+
+    # 이벤트 구성
+    event = {
+        "action": args.action,
+        "table_bucket_arn": args.table_bucket_arn,
     }
 
-    # Lambda 핸들러 테스트
-    result = lambda_handler(test_event, None)
+    if args.namespace:
+        event["namespace"] = args.namespace
+    if args.table_name:
+        event["table_name"] = args.table_name
+    if args.sql:
+        event["query"] = args.sql
+    if args.columns:
+        event["columns"] = [c.strip() for c in args.columns.split(",")]
+    if args.where:
+        event["where_clause"] = args.where
+    if args.limit:
+        event["limit"] = args.limit
+    if args.timeout:
+        event["timeout_seconds"] = args.timeout
+
+    # Athena 워크그룹/출력 위치 설정
+    global ATHENA_WORKGROUP, ATHENA_OUTPUT_LOCATION
+    if args.workgroup:
+        ATHENA_WORKGROUP = args.workgroup
+    if args.output_location:
+        ATHENA_OUTPUT_LOCATION = args.output_location
+
+    # 실행
+    logger.info(f"이벤트: {json.dumps(event, ensure_ascii=False)}")
+    result = lambda_handler(event, None)
     print(json.dumps(result, indent=2, ensure_ascii=False))
