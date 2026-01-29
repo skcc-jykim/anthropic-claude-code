@@ -1,0 +1,121 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "AthenaQueryExecution",
+            "Effect": "Allow",
+            "Action": [
+                "athena:StartQueryExecution",
+                "athena:StopQueryExecution",
+                "athena:GetQueryExecution",
+                "athena:GetQueryResults",
+                "athena:GetWorkGroup",
+                "athena:GetDataCatalog",
+                "athena:ListDataCatalogs",
+                "athena:ListDatabases",
+                "athena:ListTableMetadata",
+                "athena:GetTableMetadata"
+            ],
+            "Resource": [
+                "arn:aws:athena:*:*:workgroup/*",
+                "arn:aws:athena:*:*:datacatalog/*"
+            ]
+        },
+        {
+            "Sid": "S3TableBucketAccess",
+            "Effect": "Allow",
+            "Action": [
+                "s3tables:GetTable",
+                "s3tables:GetTableBucket",
+                "s3tables:GetTableBucketMaintenanceConfiguration",
+                "s3tables:GetTableBucketPolicy",
+                "s3tables:GetTableMaintenanceConfiguration",
+                "s3tables:GetTableMaintenanceJobStatus",
+                "s3tables:GetTableMetadataLocation",
+                "s3tables:GetTablePolicy",
+                "s3tables:ListNamespaces",
+                "s3tables:ListTableBuckets",
+                "s3tables:ListTables",
+                "s3tables:GetNamespace"
+            ],
+            "Resource": [
+                "arn:aws:s3tables:*:*:bucket/*",
+                "arn:aws:s3tables:*:*:bucket/*/table/*"
+            ]
+        },
+        {
+            "Sid": "S3QueryResultAccess",
+            "Effect": "Allow",
+            "Action": [
+                "s3:GetBucketLocation",
+                "s3:GetObject",
+                "s3:ListBucket",
+                "s3:PutObject",
+                "s3:DeleteObject"
+            ],
+            "Resource": [
+                "arn:aws:s3:::*-athena-results*",
+                "arn:aws:s3:::*-athena-results*/*"
+            ],
+            "Condition": {
+                "StringEquals": {
+                    "aws:ResourceAccount": "${aws:PrincipalAccount}"
+                }
+            }
+        },
+        {
+            "Sid": "S3TableBucketDataAccess",
+            "Effect": "Allow",
+            "Action": [
+                "s3:GetObject",
+                "s3:ListBucket",
+                "s3:GetBucketLocation"
+            ],
+            "Resource": [
+                "arn:aws:s3:::*",
+                "arn:aws:s3:::*/*"
+            ],
+            "Condition": {
+                "StringEquals": {
+                    "aws:ResourceAccount": "${aws:PrincipalAccount}"
+                }
+            }
+        },
+        {
+            "Sid": "GlueCatalogAccess",
+            "Effect": "Allow",
+            "Action": [
+                "glue:GetDatabase",
+                "glue:GetDatabases",
+                "glue:GetTable",
+                "glue:GetTables",
+                "glue:GetPartition",
+                "glue:GetPartitions",
+                "glue:BatchGetPartition"
+            ],
+            "Resource": [
+                "arn:aws:glue:*:*:catalog",
+                "arn:aws:glue:*:*:database/*",
+                "arn:aws:glue:*:*:table/*"
+            ]
+        },
+        {
+            "Sid": "LakeFormationAccess",
+            "Effect": "Allow",
+            "Action": [
+                "lakeformation:GetDataAccess"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "CloudWatchLogging",
+            "Effect": "Allow",
+            "Action": [
+                "logs:CreateLogGroup",
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+            ],
+            "Resource": "arn:aws:logs:*:*:log-group:/aws/lambda/*"
+        }
+    ]
+}
