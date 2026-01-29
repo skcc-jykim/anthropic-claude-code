@@ -736,6 +736,9 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    # 전역 변수 선언 (할당 전에 먼저 선언)
+    global AWS_REGION, ATHENA_WORKGROUP, ATHENA_OUTPUT_LOCATION
+
     # 전역 설정 업데이트
     if args.region:
         AWS_REGION = args.region
@@ -766,7 +769,6 @@ if __name__ == "__main__":
         event["timeout_seconds"] = args.timeout
 
     # Athena 워크그룹/출력 위치 설정
-    global ATHENA_WORKGROUP, ATHENA_OUTPUT_LOCATION
     if args.workgroup:
         ATHENA_WORKGROUP = args.workgroup
     if args.output_location:
