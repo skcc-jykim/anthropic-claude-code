@@ -131,19 +131,29 @@ def start_query_execution(
     Raises:
         AthenaQueryError: 쿼리 시작 실패 시
     """
-    database = database or ATHENA_DATABASE
     workgroup = workgroup or ATHENA_WORKGROUP
     output_location = output_location or ATHENA_OUTPUT_LOCATION
 
-    query_context = {"Database": database}
+    # QueryExecutionContext 구성
+    query_context = {}
+
+    # catalog가 지정된 경우 (S3 Table Bucket)
     if catalog:
         query_context["Catalog"] = catalog
+        # S3 Table Bucket은 database가 없으면 생략
+        if database:
+            query_context["Database"] = database
+    else:
+        # 일반 Athena 쿼리는 database 필수
+        query_context["Database"] = database or ATHENA_DATABASE
 
     params = {
         "QueryString": query,
         "QueryExecutionContext": query_context,
         "WorkGroup": workgroup
     }
+
+    logger.info(f"Athena 쿼리 파라미터: {json.dumps(params, default=str, ensure_ascii=False)}")
 
     # 워크그룹에 출력 위치가 설정되어 있지 않은 경우에만 지정
     if output_location:
